@@ -1,0 +1,10 @@
+# Streamlit WebUI dependencies
+streamlit>=1.28
+plotly>=5.15
+pandas>=2.0
+torch>=2.0
+torchvision>=0.15
+transformers>=4.30
+timm>=0.9
+huggingface_hub>=0.16
+psutil>=5.9

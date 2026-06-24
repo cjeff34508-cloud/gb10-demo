@@ -1,0 +1,7 @@
+# CNN Workload
+# Precision: FP4, FP8, FP16, FP32
+torch>=2.0
+torchvision>=0.15
+timm>=0.9
+numpy
+pillow>=9.0

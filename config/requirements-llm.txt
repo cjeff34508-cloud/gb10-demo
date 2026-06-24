@@ -1,0 +1,9 @@
+# LLM Inference Workload
+# Precision: FP4, FP8, FP16, FP32
+torch>=2.0
+transformers>=4.30
+accelerate>=0.20
+bitsandbytes>=0.40
+peft>=0.4
+huggingface_hub>=0.16
+numpy

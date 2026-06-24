@@ -1,0 +1,9 @@
+# Vision-Language Model (VLM) Workload
+# Precision: FP4, FP8, FP16, FP32
+torch>=2.0
+torchvision>=0.15
+transformers>=4.30
+accelerate>=0.20
+pillow>=9.0
+huggingface_hub>=0.16
+numpy

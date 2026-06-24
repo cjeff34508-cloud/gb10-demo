@@ -1,0 +1,33 @@
+# Large, regenerable artifacts (never commit)
+# models/ ~368 GB of HF weights — re-pull via scripts/model-downloader.py
+# env/    ~24 GB of venvs — rebuild via setup.sh
+models/
+env/
+venvs/
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Machine-specific / runtime state
+.setup-state
+state_snapshots/
+
+# Secrets (never commit)
+.env
+*.env
+hf-token
+*.key
+*.pem
+*.crt
+
+# OS / editor
+.DS_Store
+*.swp
+.vscode/
+.idea/
