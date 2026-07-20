@@ -1,9 +1,9 @@
 """
-On-device AI narration — runs a local instruct model ON THE Dell GB10 to generate
+On-device AI narration — runs a local instruct model ON THE Dell Pro Max GB10 to generate
 benchmark talking points, TCO recommendations, cloud comparisons, and model
 deep-dives. No cloud, no API key. This replaces the earlier Claude-based path.
 
-The narrator is kept RESIDENT on the Dell GB10 by default (see streamlit_app's
+The narrator is kept RESIDENT on the Dell Pro Max GB10 by default (see streamlit_app's
 ensure_narrator), so talking points are instant. It is unloaded only while
 benchmarks run, then reloaded. All methods stream token-by-token for
 st.write_stream().
@@ -123,7 +123,7 @@ def _fmt_workload(w: dict) -> str:
 # ---------------------------------------------------------------------------
 
 class OnDeviceNarrator:
-    """Loads the narrator model on the Dell GB10, streams analysis, then unloads."""
+    """Loads the narrator model on the Dell Pro Max GB10, streams analysis, then unloads."""
 
     def __init__(self, model: str = NARRATOR_MODEL, precision: str = NARRATOR_PRECISION):
         self.reason = ""
@@ -151,7 +151,7 @@ class OnDeviceNarrator:
     # -- results talking points -------------------------------------------------
     def results_summary(self, rdata: dict) -> Iterator[str]:
         system = (
-            "You are a Dell + NVIDIA solutions engineer presenting Dell GB10 (Grace-Blackwell, "
+            "You are a Dell + NVIDIA solutions engineer presenting Dell Pro Max GB10 (Grace-Blackwell, "
             "128 GB unified LPDDR5X at ~273 GB/s) benchmark results to a technical buyer. "
             "Use ONLY the numbers provided — never invent benchmarks. Be concise and "
             "vendor-credible. Markdown bullets, no preamble."
@@ -183,7 +183,7 @@ class OnDeviceNarrator:
         )
         return self._stream(system, user, max_new_tokens=400)
 
-    # -- cloud comparison (on-prem Dell GB10 vs hosted Claude/Gemini APIs) ------------
+    # -- cloud comparison (on-prem Dell Pro Max GB10 vs hosted Claude/Gemini APIs) ------------
     def cloud_comparison(self, workload: dict, onprem: Optional[dict],
                          api_costs: Optional[list[dict]] = None) -> Iterator[str]:
         system = (
@@ -222,16 +222,16 @@ class OnDeviceNarrator:
     def explain_model(self, name: str, scenario: str, curated_body: str = "") -> Iterator[str]:
         system = (
             "You are an ML systems expert explaining a model or HPC workload to a technical "
-            "audience evaluating the Dell GB10 (Grace-Blackwell, 128 GB unified LPDDR5X "
+            "audience evaluating the Dell Pro Max GB10 (Grace-Blackwell, 128 GB unified LPDDR5X "
             "~273 GB/s, Blackwell tensor cores with FP4 acceleration). Be accurate about "
             "architecture and whether it is compute-bound or memory-bandwidth-bound on this "
             "chip. If unsure of an exact number, say so. Markdown, no preamble."
         )
         extra = f"\n\nKnown facts (treat as ground truth):\n{curated_body}" if curated_body else ""
         user = (
-            f"Give a detailed deep-dive on '{name}' as used in the Dell GB10 scenario '{scenario}'. "
+            f"Give a detailed deep-dive on '{name}' as used in the Dell Pro Max GB10 scenario '{scenario}'. "
             "Cover: architecture & params, what it's good at, compute-bound vs "
-            "memory-bandwidth-bound on the Dell GB10 and why, precision behavior "
+            "memory-bandwidth-bound on the Dell Pro Max GB10 and why, precision behavior "
             "(FP32/FP16/INT8/FP4) and the VRAM/throughput trade-offs, and when a buyer would "
             f"choose it. Keep it tight and concrete.{extra}"
         )

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Dell GB10 Demo Suite Setup Script
+# Dell Pro Max GB10 Demo Suite Setup Script
 # Installs cuDNN 9.x, TensorRT 10.x, creates isolated venvs, initializes model downloads
 # Safe to run multiple times (idempotent with state tracking)
 
@@ -71,7 +71,7 @@ WORKLOADS=("hpc" "llm" "vlm" "cnn")
 # ============================================================================
 
 phase_init() {
-  log "Initializing Dell GB10 Demo Suite..."
+  log "Initializing Dell Pro Max GB10 Demo Suite..."
 
   mkdir -p "${PROJECT_DIR}"/{env,models,workloads,config,scripts,logs}
 
@@ -365,7 +365,7 @@ validate_setup() {
 
 main() {
   log "=========================================="
-  log "Dell GB10 Demo Suite Setup"
+  log "Dell Pro Max GB10 Demo Suite Setup"
   log "=========================================="
 
   phase_init

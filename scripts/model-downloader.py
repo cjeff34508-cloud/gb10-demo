@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Dell GB10 Demo Suite Model Downloader
+Dell Pro Max GB10 Demo Suite Model Downloader
 Downloads HuggingFace models for all workload modules.
 Stores to NVMe-backed models directory. Idempotent: skips already-downloaded models.
 """
@@ -198,7 +198,7 @@ def download_model(workload, model_id):
 def main():
     """Main entry point."""
     logger.info("=" * 60)
-    logger.info("Dell GB10 Demo Suite Model Downloader started")
+    logger.info("Dell Pro Max GB10 Demo Suite Model Downloader started")
     _dev = _nvme_device(MODELS_DIR)
     try:
         _df = subprocess.check_output(

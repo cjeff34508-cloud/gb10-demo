@@ -2,7 +2,7 @@
 Curated reference for every model and HPC test used in the benchmark scenarios.
 
 Always-available (offline) descriptions: architecture, parameter count, precision
-behavior, and what each one stresses on the Dell GB10. Keyed by the exact dropdown
+behavior, and what each one stresses on the Dell Pro Max GB10. Keyed by the exact dropdown
 strings used in streamlit_app.py; lookup also tolerates the bare name after "/".
 """
 
@@ -16,7 +16,7 @@ MODEL_INFO: dict[str, dict] = {
             "grouped-query attention, 2048 hidden.\n"
             "- **Params:** 1.1B · trained on ~3T tokens · chat fine-tuned.\n"
             "- **Footprint:** ~2.2 GB FP16 — fits every precision with room to spare.\n"
-            "- **On Dell GB10:** memory-trivial; useful for measuring the **framework / TTFT floor** "
+            "- **On Dell Pro Max GB10:** memory-trivial; useful for measuring the **framework / TTFT floor** "
             "and warming the GPU. Decode is so light it barely touches the LPDDR5X bandwidth ceiling."
         ),
     },
@@ -28,7 +28,7 @@ MODEL_INFO: dict[str, dict] = {
             "- **Params:** 3.2B · instruction-tuned · distilled from the larger Llama 3 models.\n"
             "- **Footprint:** ~6.5 GB BF16 / ~3.5 GB INT8 / ~2 GB FP4 — trivially light on the "
             "128 GB unified pool.\n"
-            "- **On Dell GB10:** the **base on-device narrator** (runs the talking-point generation at "
+            "- **On Dell Pro Max GB10:** the **base on-device narrator** (runs the talking-point generation at "
             "BF16). Decode is memory-bandwidth bound; far better narration quality than the 1.1B "
             "TinyLlama it replaces while still loading in seconds and leaving the pool wide open.\n"
             "- *Weights via the ungated unsloth re-host of meta-llama/Llama-3.2-3B-Instruct.*"
@@ -41,7 +41,7 @@ MODEL_INFO: dict[str, dict] = {
             "RoPE, up to 128K context (YaRN).\n"
             "- **Params:** 7.6B · strong multilingual, math, and coding.\n"
             "- **Footprint:** ~15 GB FP16 / ~8 GB INT8 / ~4 GB FP4.\n"
-            "- **On Dell GB10:** comfortable single-user latency target; decode is memory-bandwidth bound, "
+            "- **On Dell Pro Max GB10:** comfortable single-user latency target; decode is memory-bandwidth bound, "
             "so FP16→FP4 mainly buys VRAM headroom and a modest speedup on the 273 GB/s pool."
         ),
     },
@@ -52,7 +52,7 @@ MODEL_INFO: dict[str, dict] = {
             "cheaper long-context attention than full attention.\n"
             "- **Params:** 7.2B · base (non-instruct) checkpoint.\n"
             "- **Footprint:** ~14 GB FP16.\n"
-            "- **On Dell GB10:** a clean 7B reference; pairs well with the 7B Qwen for cross-architecture "
+            "- **On Dell Pro Max GB10:** a clean 7B reference; pairs well with the 7B Qwen for cross-architecture "
             "throughput comparison at the same parameter scale."
         ),
     },
@@ -63,7 +63,7 @@ MODEL_INFO: dict[str, dict] = {
             "- **Params:** 14B · trained heavily on curated + synthetic data for outsized "
             "reasoning per parameter.\n"
             "- **Footprint:** ~28 GB FP16 / ~14 GB INT8.\n"
-            "- **On Dell GB10:** fits FP16 with ample headroom; good 'smart mid-size' demo where quality "
+            "- **On Dell Pro Max GB10:** fits FP16 with ample headroom; good 'smart mid-size' demo where quality "
             "per GB matters more than raw size."
         ),
     },
@@ -73,7 +73,7 @@ MODEL_INFO: dict[str, dict] = {
             "- **Architecture:** dense decoder-only, grouped-query attention, long context.\n"
             "- **Params:** 14.7B.\n"
             "- **Footprint:** ~28 GB FP16 / ~15 GB INT8.\n"
-            "- **On Dell GB10:** fits FP16; a step up in quality from the 7B class at ~2× the memory and "
+            "- **On Dell Pro Max GB10:** fits FP16; a step up in quality from the 7B class at ~2× the memory and "
             "decode cost."
         ),
     },
@@ -85,17 +85,17 @@ MODEL_INFO: dict[str, dict] = {
             "- **Params:** ~46.7B total weights · **~12.9B active** per token.\n"
             "- **Footprint:** ~93 GB FP16 (all experts loaded) — the headline demo of why **VRAM "
             "capacity ≠ compute**. Compute behaves like a ~13B; memory behaves like a 47B.\n"
-            "- **On Dell GB10:** FP16 is blocked by the memory guard (>100 GB usable); runs at **INT8 "
+            "- **On Dell Pro Max GB10:** FP16 is blocked by the memory guard (>100 GB usable); runs at **INT8 "
             "(~51 GB)** or **FP4 (~26 GB)** — a great 'only fits when quantized' talking point."
         ),
     },
     "Qwen/Qwen2.5-32B-Instruct": {
-        "headline": "Qwen2.5 32B — largest dense model that fits Dell GB10 at FP16",
+        "headline": "Qwen2.5 32B — largest dense model that fits Dell Pro Max GB10 at FP16",
         "body": (
             "- **Architecture:** dense decoder-only, grouped-query attention.\n"
             "- **Params:** 32.5B.\n"
-            "- **Footprint:** ~64 GB FP16 / ~33 GB INT8 — fits the Dell GB10's 128 GB unified pool at FP16.\n"
-            "- **On Dell GB10:** the upper bound for single-device FP16 inference here; decode is firmly "
+            "- **Footprint:** ~64 GB FP16 / ~33 GB INT8 — fits the Dell Pro Max GB10's 128 GB unified pool at FP16.\n"
+            "- **On Dell Pro Max GB10:** the upper bound for single-device FP16 inference here; decode is firmly "
             "memory-bandwidth bound, so it best showcases the value of the large unified pool."
         ),
     },
@@ -106,9 +106,9 @@ MODEL_INFO: dict[str, dict] = {
             "(weights packed 4-bit, BF16 compute).\n"
             "- **Params:** 8B · ships already quantized — load as-is, no runtime bitsandbytes pass.\n"
             "- **Footprint:** ~5 GB.\n"
-            "- **On Dell GB10:** the **showcase for Blackwell hardware-accelerated FP4** — only valid at "
+            "- **On Dell Pro Max GB10:** the **showcase for Blackwell hardware-accelerated FP4** — only valid at "
             "FP4/NVFP4 precision (loading it as FP16 produces garbage). Demonstrates the 4-bit "
-            "memory + throughput win the Dell GB10's tensor cores are built for."
+            "memory + throughput win the Dell Pro Max GB10's tensor cores are built for."
         ),
     },
 
@@ -119,7 +119,7 @@ MODEL_INFO: dict[str, dict] = {
             "- **Architecture:** Vision Transformer image encoder (32×32 patches) + text encoder, "
             "trained contrastively to a shared embedding space.\n"
             "- **Params:** ~151M.\n"
-            "- **On Dell GB10:** tiny; the benchmark drives the image tower with synthetic 224×224 batches "
+            "- **On Dell Pro Max GB10:** tiny; the benchmark drives the image tower with synthetic 224×224 batches "
             "to measure encode throughput (images/sec) and how it scales with batch size."
         ),
     },
@@ -128,7 +128,7 @@ MODEL_INFO: dict[str, dict] = {
         "body": (
             "- **Architecture:** larger ViT (14×14 patches → more tokens per image) + text encoder.\n"
             "- **Params:** ~428M.\n"
-            "- **On Dell GB10:** ~3× the encoder compute of ViT-B/32; shows how finer patch size raises "
+            "- **On Dell Pro Max GB10:** ~3× the encoder compute of ViT-B/32; shows how finer patch size raises "
             "both accuracy and per-image cost at the same resolution."
         ),
     },
@@ -137,7 +137,7 @@ MODEL_INFO: dict[str, dict] = {
         "body": (
             "- **Architecture:** Vision Transformer, 16×16 patches @224, supervised ImageNet head.\n"
             "- **Params:** ~86M.\n"
-            "- **On Dell GB10:** classic ViT throughput reference; 16px patches → 196 tokens/image, "
+            "- **On Dell Pro Max GB10:** classic ViT throughput reference; 16px patches → 196 tokens/image, "
             "heavier than ViT-B/32's 49."
         ),
     },
@@ -147,7 +147,7 @@ MODEL_INFO: dict[str, dict] = {
             "- **Architecture:** small ViT (16×16 patches) trained with **DINO self-distillation** — "
             "learns strong visual features without labels.\n"
             "- **Params:** ~21M.\n"
-            "- **On Dell GB10:** the lightest vision model here; useful as the speed/cost floor for the "
+            "- **On Dell Pro Max GB10:** the lightest vision model here; useful as the speed/cost floor for the "
             "image pipeline."
         ),
     },
@@ -156,7 +156,7 @@ MODEL_INFO: dict[str, dict] = {
         "body": (
             "- **Architecture:** 50-layer **CNN** with residual blocks (not a transformer).\n"
             "- **Params:** ~25M.\n"
-            "- **On Dell GB10:** provides the **CNN-vs-Transformer** contrast — convolutions are compute- "
+            "- **On Dell Pro Max GB10:** provides the **CNN-vs-Transformer** contrast — convolutions are compute- "
             "and cache-friendly in a different way than attention, so its throughput/precision curve "
             "differs from the ViT/CLIP models."
         ),
@@ -167,7 +167,7 @@ MODEL_INFO: dict[str, dict] = {
             "- **Architecture:** CNN scaled jointly in depth/width/resolution (compound scaling); "
             "mobile inverted-bottleneck blocks.\n"
             "- **Params:** ~19M.\n"
-            "- **On Dell GB10:** best accuracy-per-FLOP CNN in the set; pairs with ResNet-50 to show how "
+            "- **On Dell Pro Max GB10:** best accuracy-per-FLOP CNN in the set; pairs with ResNet-50 to show how "
             "architecture efficiency — not just size — moves images/sec."
         ),
     },
@@ -181,7 +181,7 @@ MODEL_INFO: dict[str, dict] = {
             "cores rather than the memory bus.\n"
             "- **Reports:** sustained TFLOPS. Scales strongly with precision — BF16/FP16 tensor cores "
             "vastly outrun FP32, and FP4 outruns those again on Blackwell.\n"
-            "- **On Dell GB10:** the headline number for the chip's math throughput."
+            "- **On Dell Pro Max GB10:** the headline number for the chip's math throughput."
         ),
     },
     "Bandwidth Test": {
@@ -189,8 +189,8 @@ MODEL_INFO: dict[str, dict] = {
         "body": (
             "- **What it is:** read-modify-write passes over a multi-GB tensor (×2, +1, sqrt).\n"
             "- **Bound by:** **memory bandwidth** — almost no math per byte.\n"
-            "- **Reports:** effective GB/s against the Dell GB10's ~273 GB/s LPDDR5X ceiling.\n"
-            "- **On Dell GB10:** directly measures the unified-memory bandwidth that gates LLM decode."
+            "- **Reports:** effective GB/s against the Dell Pro Max GB10's ~273 GB/s LPDDR5X ceiling.\n"
+            "- **On Dell Pro Max GB10:** directly measures the unified-memory bandwidth that gates LLM decode."
         ),
     },
     "LOB Bandwidth": {
@@ -200,7 +200,7 @@ MODEL_INFO: dict[str, dict] = {
             "best-bid/offer spread → scatter-add updates back.\n"
             "- **Bound by:** **memory bandwidth + latency** under a random (non-streaming) access pattern.\n"
             "- **Reports:** effective GB/s, plus a gather/compute/scatter phase breakdown.\n"
-            "- **On Dell GB10:** models real exchange/HFT data movement, where access is irregular rather "
+            "- **On Dell Pro Max GB10:** models real exchange/HFT data movement, where access is irregular rather "
             "than nicely sequential."
         ),
     },
@@ -209,7 +209,7 @@ MODEL_INFO: dict[str, dict] = {
         "body": (
             "- **What it is:** sum / max / mean / std over a very large vector.\n"
             "- **Bound by:** **memory bandwidth** — each element is read once, output is a scalar.\n"
-            "- **On Dell GB10:** complements the Bandwidth Test with a reduction access pattern."
+            "- **On Dell Pro Max GB10:** complements the Bandwidth Test with a reduction access pattern."
         ),
     },
     "Fill Memory (60%)": {
@@ -217,7 +217,7 @@ MODEL_INFO: dict[str, dict] = {
         "body": (
             "- **What it is:** allocates ~60% of VRAM then runs sustained ops on it.\n"
             "- **Bound by:** **memory capacity and bandwidth at high occupancy** (where caching helps least).\n"
-            "- **On Dell GB10:** shows the chip holds bandwidth even when the 128 GB pool is heavily filled."
+            "- **On Dell Pro Max GB10:** shows the chip holds bandwidth even when the 128 GB pool is heavily filled."
         ),
     },
     "Dual Model Serving": {
@@ -226,7 +226,7 @@ MODEL_INFO: dict[str, dict] = {
             "- **What it is:** loads two model-sized tensors and runs them on separate **CUDA streams**.\n"
             "- **Bound by:** **memory capacity + concurrency** — can the unified pool host multiple "
             "models at once, and do they overlap?\n"
-            "- **On Dell GB10:** the multi-tenant / co-location story for the large unified memory."
+            "- **On Dell Pro Max GB10:** the multi-tenant / co-location story for the large unified memory."
         ),
     },
     "Black-Scholes Options": {
@@ -236,7 +236,7 @@ MODEL_INFO: dict[str, dict] = {
             "log / exp / erf / sqrt.\n"
             "- **Bound by:** **GPU compute** — transcendental math dominates (memory is a smaller factor).\n"
             "- **Reports:** millions of options/sec and GFLOPS.\n"
-            "- **On Dell GB10:** a real derivatives-pricing workload, not a synthetic stub."
+            "- **On Dell Pro Max GB10:** a real derivatives-pricing workload, not a synthetic stub."
         ),
     },
     "Monte Carlo VaR": {
@@ -247,7 +247,7 @@ MODEL_INFO: dict[str, dict] = {
             "- **Bound by:** **memory bandwidth** — generating and reducing a huge random shock tensor "
             "dominates.\n"
             "- **Reports:** millions of paths/sec and the VaR estimate.\n"
-            "- **On Dell GB10:** a representative bank/treasury risk workload that leans on the large pool."
+            "- **On Dell Pro Max GB10:** a representative bank/treasury risk workload that leans on the large pool."
         ),
     },
 }
@@ -262,8 +262,8 @@ DESIGNED_PRECISION: dict[str, tuple[str, str]] = {
     "mistralai/Mistral-7B-v0.1":          ("BF16", "released in BF16"),
     "microsoft/Phi-4":                    ("BF16", "released in BF16"),
     "Qwen/Qwen2.5-14B-Instruct":          ("BF16", "released in BF16"),
-    "mistralai/Mixtral-8x7B-Instruct-v0.1": ("BF16", "BF16-native MoE — on Dell GB10 it only fits at INT8 or FP4"),
-    "Qwen/Qwen2.5-32B-Instruct":          ("BF16", "BF16-native; fits FP16 within Dell GB10's 128 GB pool"),
+    "mistralai/Mixtral-8x7B-Instruct-v0.1": ("BF16", "BF16-native MoE — on Dell Pro Max GB10 it only fits at INT8 or FP4"),
+    "Qwen/Qwen2.5-32B-Instruct":          ("BF16", "BF16-native; fits FP16 within Dell Pro Max GB10's 128 GB pool"),
     "nvidia/Qwen3-8B-NVFP4":              ("NVFP4", "pre-quantized 4-bit for Blackwell FP4 — only valid at FP4/NVFP4"),
     # Vision / CNN (informational; these don't self-narrate)
     "openai/clip-vit-base-patch32":  ("FP16", "FP16/BF16 is the sweet spot; INT8 for max image throughput"),

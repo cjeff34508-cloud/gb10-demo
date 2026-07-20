@@ -1,4 +1,4 @@
-"""Memory guard — estimates model footprint and checks against Dell GB10 usable memory."""
+"""Memory guard — estimates model footprint and checks against Dell Pro Max GB10 usable memory."""
 
 GB10_TOTAL_GB   = 128.0
 GB10_RESERVE_GB = 28.0
@@ -84,7 +84,7 @@ def estimate_model_gb(
 def fits_in_memory(
     model_name: str, precision: str, batch_size: int = 1, context_len: int = 256
 ) -> tuple[bool, float]:
-    """Return (fits: bool, estimated_gb: float) for the Dell GB10 usable window."""
+    """Return (fits: bool, estimated_gb: float) for the Dell Pro Max GB10 usable window."""
     est = estimate_model_gb(model_name, precision, batch_size, context_len)
     return est <= GB10_USABLE_GB, est
 

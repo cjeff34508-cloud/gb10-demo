@@ -1,5 +1,5 @@
 """
-Dell GB10 Demo Suite — Failure-Mode Benchmark
+Dell Pro Max GB10 Demo Suite — Failure-Mode Benchmark
 Organised by scenario (not modality): each run surfaces workload phase,
 primary bottleneck, operating condition, and business-relevant output.
 """
@@ -60,7 +60,7 @@ def _local_tp_prompt(model, precision, tps, ttft, mem_pct, bottleneck,
         )
     return (
         f"You are {model.split('/')[-1]}, an AI model summarizing your OWN benchmark "
-        f"run. You are running locally on an Dell GB10 (Grace-Blackwell, 128 GB unified "
+        f"run. You are running locally on an Dell Pro Max GB10 (Grace-Blackwell, 128 GB unified "
         f"memory) at {precision} precision. Measured results: {tps:.0f} tokens/sec decode, "
         f"{ttft:.0f} ms time-to-first-token, {mem_pct:.0f}% of unified memory used, primary "
         f"bottleneck '{bottleneck}'.{prec_line} Write exactly three short bullet-point "
@@ -72,7 +72,7 @@ def _local_tp_prompt(model, precision, tps, ttft, mem_pct, bottleneck,
 # Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Dell GB10 Demo Suite — Dell Technologies",
+    page_title="Dell Pro Max GB10 Demo Suite — Dell Technologies",
     page_icon="💻",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -330,7 +330,7 @@ st.sidebar.markdown("""
 <div style='padding:0 0 12px 0;border-bottom:1px solid rgba(255,255,255,0.2);margin-bottom:12px;'>
   <div style='font-size:1.05em;font-weight:800;letter-spacing:0.06em;color:white;'>DELL</div>
   <div style='font-size:0.65em;font-weight:300;letter-spacing:0.18em;color:#C8D8E8;text-transform:uppercase;'>Technologies</div>
-  <div style='font-size:0.72em;color:#A0BCD4;margin-top:6px;letter-spacing:0.04em;'>Dell GB10 Demo Suite</div>
+  <div style='font-size:0.72em;color:#A0BCD4;margin-top:6px;letter-spacing:0.04em;'>Dell Pro Max GB10 Demo Suite</div>
 </div>
 <div style='font-size:0.75em;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#C8D8E8;margin-bottom:6px;'>⚙ Configuration</div>
 """, unsafe_allow_html=True)
@@ -354,7 +354,7 @@ SCENARIOS = {
     "Quick Inference":       "Single user, short context, batch 1 — baseline latency & TTFT",
     "Long Context":          "Single user, long context (4K tokens) — prefill scaling",
     "Batch Throughput":      "Single user, large batch — peak tokens/sec, up to OOM",
-    "Batch Limit Sweep":     "Auto-escalate batch until OOM — finds Dell GB10 throughput ceiling",
+    "Batch Limit Sweep":     "Auto-escalate batch until OOM — finds Dell Pro Max GB10 throughput ceiling",
     "Multi-User Concurrency":"N simultaneous sessions — max practical sessions",
     "Memory Pressure":       "Load until VRAM fills — fits-in-memory vs spill",
     "Vision Throughput":     "Images/sec across precisions — CLIP / ViT",
@@ -372,7 +372,7 @@ models_dir = Path.home() / "gb10-demo" / "models"
 _incompat: dict[str, str] = {}   # precision -> reason; Not-Compatible, never run
 
 if scenario in ("Quick Inference", "Long Context", "Batch Throughput", "Batch Limit Sweep"):
-    # Only models present on disk that fit within Dell GB10 usable memory (100 GB) at
+    # Only models present on disk that fit within Dell Pro Max GB10 usable memory (100 GB) at
     # one or more precisions. 70B/72B are excluded: they exceed FP16/BF16 capacity
     # and are not downloaded. (See TCO Analysis tab to plan larger models on bigger HW.)
     llm_models = [
@@ -389,7 +389,7 @@ if scenario in ("Quick Inference", "Long Context", "Batch Throughput", "Batch Li
     selected_model = st.sidebar.selectbox("Model", llm_models)
     # Limit precisions to what this checkpoint actually runs at: a pre-quantized NVFP4
     # model loads only at FP4/NVFP4; standard BF16 checkpoints run FP32/FP16/BF16 + FP8/INT8/FP4.
-    # FP8 = real e4m3 tensor-core compute via torchao (validated on this Dell GB10, sm_121 aarch64);
+    # FP8 = real e4m3 tensor-core compute via torchao (validated on this Dell Pro Max GB10, sm_121 aarch64);
     # INT8/FP4 via bitsandbytes. NVFP4 is not offered for standard models (needs a packed checkpoint).
     _nvfp4_model = "NVFP4" in selected_model.upper()
     precision_opts = ["FP4", "NVFP4"] if _nvfp4_model else ["FP32", "FP16", "BF16", "FP8", "INT8", "FP4"]
@@ -432,7 +432,7 @@ if scenario in ("Quick Inference", "Long Context", "Batch Throughput", "Batch Li
     if scenario == "Batch Throughput":
         batch_size = st.sidebar.number_input(
             "Batch size", min_value=1, max_value=2048, value=32, step=16,
-            help="Dell GB10 has 128 GB unified memory (~100 GB usable) — push past 32 to stress memory"
+            help="Dell Pro Max GB10 has 128 GB unified memory (~100 GB usable) — push past 32 to stress memory"
         )
     elif scenario == "Batch Limit Sweep":
         sweep_start = st.sidebar.number_input("Start batch", min_value=1, max_value=256, value=1, step=1)
@@ -446,7 +446,7 @@ if scenario in ("Quick Inference", "Long Context", "Batch Throughput", "Batch Li
     gen_local_tp = st.sidebar.checkbox(
         "📝 On-device talking points", value=True,
         help="After the run, have THIS model generate its own results summary "
-             "locally on the Dell GB10 (no cloud) and show it in Results.",
+             "locally on the Dell Pro Max GB10 (no cloud) and show it in Results.",
     )
 
 elif scenario == "Multi-User Concurrency":
@@ -494,7 +494,7 @@ elif scenario == "Vision Throughput":
     precisions = st.sidebar.multiselect("Precisions", precision_opts, default=["FP32", "FP16"])
     batch_size = st.sidebar.number_input(
         "Batch size", min_value=1, max_value=2048, value=8, step=8,
-        help="Large batches stress VRAM — try 128+ on the Dell GB10"
+        help="Large batches stress VRAM — try 128+ on the Dell Pro Max GB10"
     )
     num_runs = st.sidebar.slider("Runs", 2, 8, 3)
     num_users = 1
@@ -514,7 +514,7 @@ else:  # HPC / Quant Analysis
     num_runs = st.sidebar.slider("Runs", 2, 8, 3)
     hpc_target_gb = st.sidebar.slider(
         "GPU memory target (GB)", 4, 80, 32, step=4,
-        help="Sizes each test to consume ~this much of the Dell GB10's 128 GB unified memory, "
+        help="Sizes each test to consume ~this much of the Dell Pro Max GB10's 128 GB unified memory, "
              "so it saturates the real resource (bandwidth / compute / capacity). "
              "The Results show which one was the bottleneck.",
     )
@@ -540,11 +540,11 @@ st.markdown(f"""
 <div class="dell-header">
   <div>
     <div class="dell-logo"><strong>DELL</strong> &nbsp;technologies</div>
-    <div class="dell-title">Dell GB10 Demo Suite</div>
-    <div class="dell-subtitle">Blackwell · Dell GB10 · aarch64 &nbsp;|&nbsp; AI Workload Benchmarking</div>
+    <div class="dell-title">Dell Pro Max GB10 Demo Suite</div>
+    <div class="dell-subtitle">Blackwell · Dell Pro Max GB10 · aarch64 &nbsp;|&nbsp; AI Workload Benchmarking</div>
   </div>
   <div class="dell-badge">
-    Dell GB10<br>
+    Dell Pro Max GB10<br>
     <span style="font-size:1.2em;font-weight:700;">Blackwell</span><br>
     128 GB Unified Memory
   </div>
@@ -575,7 +575,7 @@ def ensure_narrator(show_spinner: bool = True):
         st.session_state.narrator = None
         return None
     if show_spinner:
-        with st.spinner(f"🟢 Bringing up on-device narrator ({NARRATOR_MODEL.split('/')[-1]} @ {NARRATOR_PRECISION}) on the Dell GB10…"):
+        with st.spinner(f"🟢 Bringing up on-device narrator ({NARRATOR_MODEL.split('/')[-1]} @ {NARRATOR_PRECISION}) on the Dell Pro Max GB10…"):
             n = make_narrator()
     else:
         n = make_narrator()
@@ -622,7 +622,7 @@ with tab_settings:
         guides = {
             "Quick Inference": "TTFT + decode latency at batch=1. Primary indicator: time to first token (user experience).",
             "Long Context": "Prefill cost scales with context length. Exposes memory-bandwidth limit on long sequences.",
-            "Batch Throughput": "Peak tokens/sec at large batch. Dell GB10 has 128 GB unified memory — push batch into the hundreds to stress VRAM.",
+            "Batch Throughput": "Peak tokens/sec at large batch. Dell Pro Max GB10 has 128 GB unified memory — push batch into the hundreds to stress VRAM.",
             "Batch Limit Sweep": "Auto-escalates batch geometrically (1→2→4→8…→OOM). Plots tokens/sec and VRAM% to find the exact memory capacity ceiling.",
             "Multi-User Concurrency": "How many sessions fit in 128 GB unified memory. Exposes memory capacity limit.",
             "Memory Pressure": "Sustained bandwidth at high memory fill. Exposes bandwidth ceiling.",
@@ -673,7 +673,7 @@ with tab_benchmark:
 
     if run_benchmark:
         # Free the resident narrator and flush GPU memory so the benchmark gets a
-        # clean, uncontended Dell GB10 to test against.
+        # clean, uncontended Dell Pro Max GB10 to test against.
         _had_narrator = st.session_state.get("narrator") is not None
         unload_narrator_for_benchmark()
         if _had_narrator:
@@ -727,7 +727,7 @@ with tab_benchmark:
                     _pb, _pm = max(_ok_runs, key=lambda x: x[1].business_output.get("tokens_per_sec", 0))
                     _ptps = _pm.business_output.get("tokens_per_sec", 0)
                     _dp, _dpn = designed_precision(selected_model)
-                    with st.spinner("📝 Dell GB10 is writing its own results summary…"):
+                    with st.spinner("📝 Dell Pro Max GB10 is writing its own results summary…"):
                         _txt = inf.generate_text(_local_tp_prompt(
                             selected_model, sweep_prec, _ptps,
                             _pm.business_output.get("ttft_ms", _pm.latency_ms),
@@ -774,10 +774,10 @@ with tab_benchmark:
                                 if getattr(m, "precision_note", ""):
                                     st.caption(f"ⓘ {m.precision_note}")
                                 # On-device talking points — let this model narrate its own
-                                # run on the Dell GB10 before we unload it (first success only).
+                                # run on the Dell Pro Max GB10 before we unload it (first success only).
                                 if gen_local_tp and local_summary is None:
                                     _dp, _dpn = designed_precision(selected_model)
-                                    with st.spinner("📝 Dell GB10 is writing its own results summary…"):
+                                    with st.spinner("📝 Dell Pro Max GB10 is writing its own results summary…"):
                                         _txt = inf.generate_text(_local_tp_prompt(
                                             selected_model, precision, tps,
                                             ttft, m.operational_condition.get("mem_pct", 0),
@@ -967,13 +967,13 @@ with tab_results:
 
     st.caption(f"**Scenario:** {rdata['scenario']}   |   **Model:** {rdata['model']}")
 
-    # On-device talking points — generated by the benchmarked model itself, on the Dell GB10
+    # On-device talking points — generated by the benchmarked model itself, on the Dell Pro Max GB10
     _local = rdata.get("local_summary")
     if _local and _local.get("text"):
         st.markdown(
             f"#### 🟢 On-Device Talking Points "
             f"<span style='font-size:0.7em;color:#76B900;'>— generated locally by "
-            f"{_local['model'].split('/')[-1]} @ {_local['precision']} on the Dell GB10 "
+            f"{_local['model'].split('/')[-1]} @ {_local['precision']} on the Dell Pro Max GB10 "
             f"({_local['tps']:.0f} tok/s), no cloud</span>",
             unsafe_allow_html=True,
         )
@@ -989,10 +989,10 @@ with tab_results:
         st.success(_local["text"])
     else:
         # Scenarios that can't self-narrate (vision / HPC / memory): run the on-device
-        # narrator model on the Dell GB10 to generate the talking points locally.
+        # narrator model on the Dell Pro Max GB10 to generate the talking points locally.
         with st.expander("🟢 On-Device AI Talking Points", expanded=False):
             _ai_ok, _ai_reason = narrator_available()
-            st.caption("Generate sales talking points from these results — locally on the Dell GB10, no cloud."
+            st.caption("Generate sales talking points from these results — locally on the Dell Pro Max GB10, no cloud."
                        if _ai_ok else f"⚠ {_ai_reason}")
             if st.button("Generate on-device", key="ai_results", disabled=not _ai_ok):
                 _narr = ensure_narrator()   # resident
@@ -1021,7 +1021,7 @@ with tab_results:
 
         st.markdown(f"#### Batch Throughput Sweep — {sweep_prec}")
         if oom_batch:
-            st.error(f"💥 OOM at batch={oom_batch} — that's the Dell GB10 limit for {rdata['model']} @ {sweep_prec}")
+            st.error(f"💥 OOM at batch={oom_batch} — that's the Dell Pro Max GB10 limit for {rdata['model']} @ {sweep_prec}")
 
         if batches:
             fig_sweep = go.Figure()
@@ -1155,7 +1155,7 @@ with tab_results:
     st.markdown("#### Performance Scorecard")
     st.markdown(
         "<div style='display:flex;flex-wrap:wrap;gap:2px;margin-bottom:14px;'>"
-        + _rag("Mem BW Util",      f"{_bw_util:.1f}%",   _bw_color,   "vs Dell GB10 273 GB/s")
+        + _rag("Mem BW Util",      f"{_bw_util:.1f}%",   _bw_color,   "vs Dell Pro Max GB10 273 GB/s")
         + _rag("Throughput",       f"{_tput_sc:.0f}",    _tput_color, "tok/s" if _tps_sc > 0 else "img/s")
         + _rag("Scale Eff.",       "100%",               _eff_color,  "single GPU")
         + _rag("Final Quality",    _prec_sc,             _qual_color, _qual_note)
@@ -1391,7 +1391,7 @@ with tab_results:
                               "color": "#E87722", "sxm": True,
                               "ic_type": "NVLink 5.0", "ic_bw_gbs": 3_600, "ic_premium": 0.10},
     }
-    _GB10_BW_GBS   = 273          # real Dell GB10 LPDDR5X memory BW (not NVLink-C2C 900)
+    _GB10_BW_GBS   = 273          # real Dell Pro Max GB10 LPDDR5X memory BW (not NVLink-C2C 900)
     _SCALE_FACTOR  = 1000         # 1,000× production scale
     _OOM_PENALTY   = 1.5          # cost multiplier for non-SXM that can't fit model
     _AMORT_HOURS   = 3 * 365 * 24 # 3-year straight-line amortisation
@@ -1521,7 +1521,7 @@ with tab_results:
             st.plotly_chart(_fig_capex, use_container_width=True)
 
     st.caption(
-        f"Load basis: {_primary_tput:,.0f} {_tput_label} on Dell GB10 → {_target_tput:,.0f} {_tput_label} target (1,000×). "
+        f"Load basis: {_primary_tput:,.0f} {_tput_label} on Dell Pro Max GB10 → {_target_tput:,.0f} {_tput_label} target (1,000×). "
         "3-year straight-line CapEx amortization at $0.12/kWh power. "
         "Scaling efficiency: −8%/GPU in NVLink aggregate (floor 70%); 50% for OOM non-SXM configs. "
         "Economy of scale: −3% per 10 nodes beyond 10. "
@@ -1553,7 +1553,7 @@ with tab_results:
                 "scale_gpu": "H100 SXM5 (up to 8 sessions/GPU) → H200 (11 sessions/GPU at 141 GB)",
                 "cost_gpu": "RTX PRO 6000 Blackwell cluster — best $/MTok below 32B model size",
                 "prec_advice": "BF16 for quality; NVFP4 on Blackwell for 4× throughput at near-FP16 quality",
-                "gb10_equiv": f"~{max(1, int(30_000/3_000))} Dell GB10 units ≈ 1 H100 on raw BW; Dell GB10 wins on $/MTok",
+                "gb10_equiv": f"~{max(1, int(30_000/3_000))} Dell Pro Max GB10 units ≈ 1 H100 on raw BW; Dell Pro Max GB10 wins on $/MTok",
             }
 
         elif scenario == "Batch Throughput":
@@ -1561,26 +1561,26 @@ with tab_results:
                 "best_for_scale": "mistralai/Mixtral-8x7B-Instruct-v0.1 or Qwen/Qwen2.5-14B-Instruct",
                 "why": (
                     "MoE (Mixtral) routes only 2 of 8 experts per token, giving near-7B latency "
-                    "with 70B-class quality. At large batch the Dell GB10's 128 GB unified memory "
+                    "with 70B-class quality. At large batch the Dell Pro Max GB10's 128 GB unified memory "
                     "lets you pack bigger batches than an H100 (80 GB), but H200 (141 GB) "
                     "wins at batch≥64."
                 ),
                 "scale_gpu": "H200 SXM (best memory per dollar for large-batch) → B200 for FP4 acceleration",
                 "cost_gpu": "GB200 NVL2 at scale — 384 GB fits 72B models for maximum throughput",
                 "prec_advice": "INT8 or NVFP4 to double/quadruple batch capacity within the same VRAM budget",
-                "gb10_equiv": f"This run: {tps:.0f} tok/s · H200 est. {tps*(4800/273):.0f} tok/s (~18× Dell GB10 mem BW)",
+                "gb10_equiv": f"This run: {tps:.0f} tok/s · H200 est. {tps*(4800/273):.0f} tok/s (~18× Dell Pro Max GB10 mem BW)",
             }
 
         elif scenario == "Batch Limit Sweep":
             return {
                 "best_for_scale": "Largest model that fits in 80% of target GPU VRAM at your working precision",
                 "why": (
-                    "OOM boundary shifts proportionally with VRAM. If the Dell GB10 OOM'd at batch N "
+                    "OOM boundary shifts proportionally with VRAM. If the Dell Pro Max GB10 OOM'd at batch N "
                     "with 128 GB, an H200 (141 GB) extends it ~1.1×; a B200 (192 GB) ~1.5×; "
                     "GB200 NVL2 (384 GB) ~3×."
                 ),
-                "scale_gpu": "B200 SXM (192 GB) for 1.5× OOM ceiling over Dell GB10 at same model",
-                "cost_gpu": "Dell GB10 cluster for $/MTok; single B200 for peak throughput per U of rack",
+                "scale_gpu": "B200 SXM (192 GB) for 1.5× OOM ceiling over Dell Pro Max GB10 at same model",
+                "cost_gpu": "Dell Pro Max GB10 cluster for $/MTok; single B200 for peak throughput per U of rack",
                 "prec_advice": "NVFP4 on Blackwell GPUs effectively halves model footprint, doubling the OOM ceiling",
                 "gb10_equiv": f"Model used {mem:.1f} GB of 128 GB ({mem/1.28:.0f}% fill)",
             }
@@ -1591,10 +1591,10 @@ with tab_results:
                 "why": (
                     "Session count scales inversely with model size. 1B fits ~100 sessions in 128 GB; "
                     "7B fits ~14 sessions; 14B fits ~7 sessions. "
-                    "Dell GB10's 128 GB unified memory outperforms H100 (80 GB) for concurrent session count."
+                    "Dell Pro Max GB10's 128 GB unified memory outperforms H100 (80 GB) for concurrent session count."
                 ),
-                "scale_gpu": "GB200 NVL2 (384 GB) → 3× the concurrent sessions of Dell GB10 per unit",
-                "cost_gpu": "Dell GB10 cluster — $3K/unit, scale out horizontally for enterprise session counts",
+                "scale_gpu": "GB200 NVL2 (384 GB) → 3× the concurrent sessions of Dell Pro Max GB10 per unit",
+                "cost_gpu": "Dell Pro Max GB10 cluster — $3K/unit, scale out horizontally for enterprise session counts",
                 "prec_advice": "NVFP4 or INT8 to double effective session capacity within same VRAM",
                 "gb10_equiv": f"128 GB unified → can serve ~{int(128 / max(0.1, mem))} sessions at {mem:.1f} GB/session",
             }
@@ -1603,14 +1603,14 @@ with tab_results:
             return {
                 "best_for_scale": "Use NVFP4 quantized models (nvidia/Qwen3-8B-NVFP4) for maximum memory efficiency",
                 "why": (
-                    "FP4 reduces model footprint 4× vs FP16. On Blackwell hardware (Dell GB10, B200, GB200) "
+                    "FP4 reduces model footprint 4× vs FP16. On Blackwell hardware (Dell Pro Max GB10, B200, GB200) "
                     "NVFP4 is hardware-accelerated with near-FP16 accuracy. "
-                    "For memory-bandwidth stress testing, B200/GB200 HBM3e delivers 8–16 TB/s vs Dell GB10's 0.27 TB/s LPDDR5X."
+                    "For memory-bandwidth stress testing, B200/GB200 HBM3e delivers 8–16 TB/s vs Dell Pro Max GB10's 0.27 TB/s LPDDR5X."
                 ),
-                "scale_gpu": "B200 SXM — 8 TB/s HBM3e BW, ~29× higher sustained bandwidth than Dell GB10",
-                "cost_gpu": "Dell GB10 is unmatched at ~$4K; next step is RTX PRO 6000 at ~$13K with 960 GB/s GDDR7",
+                "scale_gpu": "B200 SXM — 8 TB/s HBM3e BW, ~29× higher sustained bandwidth than Dell Pro Max GB10",
+                "cost_gpu": "Dell Pro Max GB10 is unmatched at ~$4K; next step is RTX PRO 6000 at ~$13K with 960 GB/s GDDR7",
                 "prec_advice": "NVFP4 on any Blackwell GPU; BF16 on H200 for HBM3e bandwidth comparison",
-                "gb10_equiv": f"Dell GB10 at {mem:.1f} GB used · BW scaling: H200 = {tps*(4800/273):.0f} vs {tps:.0f} Dell GB10",
+                "gb10_equiv": f"Dell Pro Max GB10 at {mem:.1f} GB used · BW scaling: H200 = {tps*(4800/273):.0f} vs {tps:.0f} Dell Pro Max GB10",
             }
 
         elif scenario == "Vision Throughput":
@@ -1620,12 +1620,12 @@ with tab_results:
                     "ViT/CLIP throughput scales linearly with memory bandwidth up to compute-saturation. "
                     "At batch≥64 the workload becomes compute-bound (TFlops), where B200 and GB200 "
                     "pull far ahead. For edge/workstation scale, RTX PRO 6000 at ~$13K "
-                    "gives 960 GB/s GDDR7 — ~3.5× Dell GB10's memory bandwidth — at a fraction of H100 cost."
+                    "gives 960 GB/s GDDR7 — ~3.5× Dell Pro Max GB10's memory bandwidth — at a fraction of H100 cost."
                 ),
                 "scale_gpu": "H100 SXM5 → H200 for large-batch image pipelines (>10K img/s)",
                 "cost_gpu": "RTX PRO 6000 Blackwell — best img/s per dollar for sub-1K batch workloads",
                 "prec_advice": "FP16/BF16 for quality; INT8 for 2× throughput at batch≥32",
-                "gb10_equiv": f"Dell GB10: {ips:.1f} img/s · H100 est. {ips*(3350/273):.0f} img/s at ~12× BW",
+                "gb10_equiv": f"Dell Pro Max GB10: {ips:.1f} img/s · H100 est. {ips*(3350/273):.0f} img/s at ~12× BW",
             }
 
         else:  # HPC / Quant Analysis
@@ -1638,9 +1638,9 @@ with tab_results:
                     "before stepping to NVL-scale hardware."
                 ),
                 "scale_gpu": "GB200 NVL2 for peak TFLOPS; H200 for peak memory bandwidth per dollar",
-                "cost_gpu": "Dell GB10 unbeatable for edge HPC/financial compute at $3K — 500 TFLOPS BF16",
+                "cost_gpu": "Dell Pro Max GB10 unbeatable for edge HPC/financial compute at $3K — 500 TFLOPS BF16",
                 "prec_advice": "FP64 for scientific accuracy; BF16/TF32 for ML HPC; FP4 for AI-accelerated quant",
-                "gb10_equiv": "Dell GB10 ≈ 500 TFLOPS BF16 · B200 = 4.5× · GB200 NVL2 = 9×",
+                "gb10_equiv": "Dell Pro Max GB10 ≈ 500 TFLOPS BF16 · B200 = 4.5× · GB200 NVL2 = 9×",
             }
 
     _advice = _scale_advice(scenario, rdata["model"], best, all_metrics)
@@ -1679,7 +1679,7 @@ with tab_results:
 
         st.markdown(f"""
 <div class="biz-card">
-<h4>Dell GB10 Scale Context</h4>
+<h4>Dell Pro Max GB10 Scale Context</h4>
 <p style="font-size:0.9em; color:#444;">{_advice['gb10_equiv']}</p>
 </div>
 """, unsafe_allow_html=True)
@@ -1705,7 +1705,7 @@ with tab_tco:
     st.subheader("Total Cost of Ownership — Dell HW Lineup")
     st.caption(
         "Compare CapEx + 3-year OpEx across Dell PowerEdge XE systems. "
-        "Projections use measured Dell GB10 benchmark throughput (when available) scaled "
+        "Projections use measured Dell Pro Max GB10 benchmark throughput (when available) scaled "
         "by memory-bandwidth ratio. Prices are approximate 2025-2026 list prices."
     )
 
@@ -1733,12 +1733,12 @@ with tab_tco:
             "(a working set of paths) and a **target paths/sec**, not an LLM model. Each system "
             "is sized to `max(fit the working set, meet the demanded bandwidth)`, then ranked by "
             "**fewest GPUs** (Best/Better/Good rating = per-GPU memory speed 70% + VRAM capacity 30%). "
-            "High-HBM parts need far fewer GPUs than Dell GB10's 273 GB/s LPDDR5X — for bandwidth-bound "
-            "quant, Dell GB10 is honestly the wrong tool, and this surfaces that."
+            "High-HBM parts need far fewer GPUs than Dell Pro Max GB10's 273 GB/s LPDDR5X — for bandwidth-bound "
+            "quant, Dell Pro Max GB10 is honestly the wrong tool, and this surfaces that."
         )
 
     # -----------------------------------------------------------------------
-    # Pull Dell GB10 measured TPS from session state (if benchmark has been run)
+    # Pull Dell Pro Max GB10 measured TPS from session state (if benchmark has been run)
     # -----------------------------------------------------------------------
     _results = st.session_state.get("results", {})
     _gb10_tps_measured: float | None = None
@@ -1808,7 +1808,7 @@ with tab_tco:
                 options=list(MODEL_CATALOG.keys()),
                 index=list(MODEL_CATALOG.keys()).index("Llama-3.3-70B")
                 if "Llama-3.3-70B" in MODEL_CATALOG else 0,
-                help="Includes models too large for a single Dell GB10 — system will auto-scale nodes.",
+                help="Includes models too large for a single Dell Pro Max GB10 — system will auto-scale nodes.",
             )
             _tco_prec_opts = supported_precisions(tco_model)
             _tco_native = native_precision(tco_model)
@@ -1896,15 +1896,15 @@ with tab_tco:
             min_value=0, max_value=30, value=15, step=1,
         ) / 100.0
 
-        # Dell GB10 measured TPS override (LLM profile only — FinTech sizes on bandwidth).
+        # Dell Pro Max GB10 measured TPS override (LLM profile only — FinTech sizes on bandwidth).
         if not is_fintech:
             st.markdown("**Throughput Baseline**")
             if _gb10_tps_measured:
                 _src = f" ({_gb10_tps_model.split('/')[-1]})" if _gb10_tps_model else ""
-                st.success(f"Using measured Dell GB10 TPS: **{_gb10_tps_measured:.0f} tok/s**{_src}")
+                st.success(f"Using measured Dell Pro Max GB10 TPS: **{_gb10_tps_measured:.0f} tok/s**{_src}")
                 default_tps = _gb10_tps_measured
             else:
-                st.info("No benchmark run yet — using estimated Dell GB10 throughput.")
+                st.info("No benchmark run yet — using estimated Dell Pro Max GB10 throughput.")
                 default_tps = None
 
             # Measured TPS can legitimately be <10 tok/s for very large models, so
@@ -1914,11 +1914,11 @@ with tab_tco:
             _tps_default = float(default_tps) if default_tps else 1200.0
             _tps_default = min(_tps_max, max(_tps_min, _tps_default))
             tco_tps_override = st.number_input(
-                "Dell GB10 Baseline TPS (tok/s) — override",
+                "Dell Pro Max GB10 Baseline TPS (tok/s) — override",
                 min_value=_tps_min, max_value=_tps_max,
                 value=_tps_default,
                 step=50.0,
-                help="Tokens/sec measured on Dell GB10 for this model+precision. Used to scale projections.",
+                help="Tokens/sec measured on Dell Pro Max GB10 for this model+precision. Used to scale projections.",
             )
 
     with tco_c3:
@@ -1944,10 +1944,10 @@ with tab_tco:
         elif tco_scope == "all":
             _scope_names = list(DELL_SYSTEMS.keys())
         else:
-            # Always keep the Dell GB10 baseline visible — it is what every projection scales from.
-            _scope_names = ["Dell GB10"] + [
+            # Always keep the Dell Pro Max GB10 baseline visible — it is what every projection scales from.
+            _scope_names = ["Dell Pro Max GB10"] + [
                 n for n, s in DELL_SYSTEMS.items()
-                if s.get("generation") == tco_scope and n != "Dell GB10"
+                if s.get("generation") == tco_scope and n != "Dell Pro Max GB10"
             ]
         # options = the WHOLE catalog, always; scope only chooses what starts selected. If options
         # were limited to the scope, everything in it would already be selected and the dropdown
@@ -2013,7 +2013,7 @@ with tab_tco:
                    help=f"{mc_resident:,.0f} paths × {mc_bytes} B/path — must fit in VRAM")
         ma3.metric("Demanded BW", f"{_demanded_tbs:,.2f} TB/s",
                    help=f"{mc_target:,.0f} paths/s × {mc_bytes} B × {mc_steps} steps")
-        ma4.metric("Fits on Dell GB10 (128 GB)?", "Yes" if _working_gb <= 128 else "No")
+        ma4.metric("Fits on Dell Pro Max GB10 (128 GB)?", "Yes" if _working_gb <= 128 else "No")
     else:
         _eff_ctx = tco_ctx + tco_output_toks   # KV cache holds context + generated output
         m_gb = model_memory_gb(tco_model, tco_precision, batch_size=1, context_len=_eff_ctx)
@@ -2024,7 +2024,7 @@ with tab_tco:
                    help=f"Weights + KV cache for {_eff_ctx:,} tokens "
                         f"({tco_ctx:,} ctx + {tco_output_toks:,} output)")
         ma3.metric("Precision", tco_precision)
-        ma4.metric("Fits on Dell GB10 (128 GB)?", "Yes" if m_gb <= 128 else "No")
+        ma4.metric("Fits on Dell Pro Max GB10 (128 GB)?", "Yes" if m_gb <= 128 else "No")
 
     # -----------------------------------------------------------------------
     # Workforce demand — total employees → effective concurrent sessions
@@ -2184,7 +2184,7 @@ with tab_tco:
             return (1, 0.0, 0.0)
         if tco_profile == "fintech":
             # Bandwidth-bound MC sizing answer: fewest GPUs to hit the target, then
-            # lowest TCO. High-BW parts (B200/GB300) need far fewer GPUs than Dell GB10.
+            # lowest TCO. High-BW parts (B200/GB300) need far fewer GPUs than Dell Pro Max GB10.
             return (0, r.gpus_total, r.tco_usd)
         return (0, r.tco_usd, -r.tps_per_user)
     tco_rows.sort(key=_row_sortkey)
@@ -2198,7 +2198,7 @@ with tab_tco:
             "Sized for a **bandwidth-bound Monte-Carlo** workload — ranked by **fewest GPUs** "
             "to hit your target paths/sec, then lowest TCO (Not-Viable last). **GPUs Needed** = "
             "`max(fit the working set, meet the demanded bandwidth)`; high-HBM parts (HBM3e ≫ "
-            "GDDR7 ≫ LPDDR5X) need far fewer than Dell GB10's 273 GB/s. **Rating** = per-GPU memory "
+            "GDDR7 ≫ LPDDR5X) need far fewer than Dell Pro Max GB10's 273 GB/s. **Rating** = per-GPU memory "
             "speed (70%) + VRAM capacity (30%), cost-independent. **Paths/s** is the achievable "
             f"throughput from the provisioned GPUs; **$/B-paths** is cost per billion paths over the "
             f"{tco_amort}-yr window. **Unit $** is the per-node/per-rack list price."
@@ -2353,7 +2353,7 @@ with tab_tco:
                        "ai.google.dev/gemini-api/docs/pricing.")
 
     st.markdown("### 🟢 On-Device AI Analysis")
-    st.caption("Generated locally on the Dell GB10 by "
+    st.caption("Generated locally on the Dell Pro Max GB10 by "
                f"{NARRATOR_MODEL.split('/')[-1]} — no cloud."
                if _ai_ok else f"⚠ {_ai_reason}")
     # Cloud-API token comparison only applies to the token-based LLM profile.
@@ -2525,13 +2525,13 @@ with tab_tco:
                 st.caption(f"Best for: {best_for}")
 
     # -----------------------------------------------------------------------
-    # Dell GB10 vs scale-up comparison (if benchmark data exists)
+    # Dell Pro Max GB10 vs scale-up comparison (if benchmark data exists)
     # -----------------------------------------------------------------------
     if _gb10_tps_measured and not is_fintech:
         st.divider()
-        st.markdown("### Dell GB10 Measured → Scale-Up Projection")
+        st.markdown("### Dell Pro Max GB10 Measured → Scale-Up Projection")
         st.caption(
-            f"Measured Dell GB10 throughput: **{_gb10_tps_measured:.0f} tok/s** — "
+            f"Measured Dell Pro Max GB10 throughput: **{_gb10_tps_measured:.0f} tok/s** — "
             "projected to larger systems using memory-bandwidth ratio scaling."
         )
         from helpers.tco_engine import scale_throughput, gpus_needed_for_model
@@ -2550,7 +2550,7 @@ with tab_tco:
                 # into identical rows (all 6 R770 builds became one "Dell PowerEdge R770").
                 "System":       sname.replace("Dell PowerEdge ", "").replace("Dell ", ""),
                 "BW (GB/s)":    f"{sinfo['gpu_bw_gbs']:,}",
-                "BW vs Dell GB10":   f"{sinfo['gpu_bw_gbs'] / GB10_BW_GBS:.1f}×",
+                "BW vs Dell Pro Max GB10":   f"{sinfo['gpu_bw_gbs'] / GB10_BW_GBS:.1f}×",
                 "Proj. TPS":    f"{_proj_tps:,.0f}",
                 "Speedup":      f"{_proj_tps / max(_gb10_tps_measured, 1):.1f}×",
             })
@@ -2562,8 +2562,8 @@ with tab_tco:
 st.divider()
 st.markdown(
     "<div class='dell-footer'>"
-    "<span>DELL</span> technologies &nbsp;·&nbsp; Dell GB10 Demo Suite "
-    "&nbsp;·&nbsp; Blackwell · Dell GB10 · aarch64 "
+    "<span>DELL</span> technologies &nbsp;·&nbsp; Dell Pro Max GB10 Demo Suite "
+    "&nbsp;·&nbsp; Blackwell · Dell Pro Max GB10 · aarch64 "
     "&nbsp;·&nbsp; Confidential — For Internal Sales Use Only"
     "</div>",
     unsafe_allow_html=True,

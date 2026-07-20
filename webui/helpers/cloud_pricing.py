@@ -3,7 +3,7 @@ Cloud API token-cost reference for the TCO "Compare to Cloud" comparison.
 
 Published per-million-token list prices (USD) for hosted frontier LLM APIs, used
 to estimate what the user's workload would cost on Claude / Gemini instead of
-running it on-prem on the Dell GB10. These are standard-context paid-tier rates as of
+running it on-prem on the Dell Pro Max GB10. These are standard-context paid-tier rates as of
 2026 — verify before quoting in a customer-facing setting.
 
 Sources:
@@ -40,7 +40,7 @@ def api_token_costs(input_toks: int, output_toks: int) -> list[dict]:
     Each entry also carries ``cost_per_mtok_out`` — the cost per 1M OUTPUT
     tokens, loaded with the proportional input each output token "carries"
     (output_price + input_price × input/output). That figure is on the same
-    output-token basis as the Dell GB10 TCO's ``cost_per_mtok``, so the two are
+    output-token basis as the Dell Pro Max GB10 TCO's ``cost_per_mtok``, so the two are
     directly comparable. Sorted cheapest → most expensive by that figure.
     """
     out_ratio = (input_toks / output_toks) if output_toks else 0.0

@@ -288,7 +288,7 @@ GPU_SPECS: dict[str, dict] = {
 # Three pricing shapes:
 #   1. Flexible (base + GPUs)  — R-series, XE7745/7740, edge. price = platform + N × gpu_price
 #   2. Fixed x8 (base + 8)     — XE97xx HGX. Same mechanism with min_gpus == max_gpus == 8.
-#   3. Fixed, GPU-INCLUSIVE    — XE8712 NVL4, XE9712 NVL72, Dell GB10. Flat `system_price`
+#   3. Fixed, GPU-INCLUSIVE    — XE8712 NVL4, XE9712 NVL72, Dell Pro Max GB10. Flat `system_price`
 #                                already contains the accelerators; the per-GPU figure is a
 #                                modeling reference and is NEVER added on top.
 #
@@ -307,12 +307,12 @@ GPU_SPECS: dict[str, dict] = {
 # NVL72 136 kW per rack).
 
 DELL_SYSTEMS: dict[str, dict] = {
-    "Dell GB10": {
+    "Dell Pro Max GB10": {
         "category":        "Edge / Workstation",
         "system_price":    8_000,        # GPU-inclusive (shape 3) — the superchip IS the system
         "gpus_per_node":   1,
-        "gpu_spec":        None,          # Dell GB10 not in supplied spec sheet — keep explicit values
-        "gpu_model":       "Dell GB10 (Grace-Blackwell)",
+        "gpu_spec":        None,          # Dell Pro Max GB10 not in supplied spec sheet — keep explicit values
+        "gpu_model":       "Dell Pro Max GB10 (Grace-Blackwell)",
         "vram_gb":         128,          # unified LPDDR5X
         "gpu_bw_gbs":      273,          # real LPDDR5X memory BW (~273 GB/s), not NVLink-C2C 900
         "tflops_fp16":     500,
@@ -630,7 +630,7 @@ def _build_catalog() -> None:
 
         if rack:
             # Shape 3 — GPU-inclusive. Flat price; gpu_price is NEVER added (node_price() returns
-            # system_price unchanged for a non-flexible entry, same as Dell GB10).
+            # system_price unchanged for a non-flexible entry, same as Dell Pro Max GB10).
             entry.update({
                 "system_price": plat_price,
                 "system_tdp_w": p["tdp"],
@@ -698,7 +698,7 @@ def _validate_catalog() -> None:
 # ladder from the demo box up. Everything else is reachable from the scope selector in the UI.
 DEFAULT_SYSTEMS: list[str] = [
     # --- the demo box + the mainstream ladder ---------------------------------------
-    "Dell GB10",                                    # the demo box + the tok/s baseline
+    "Dell Pro Max GB10",                                    # the demo box + the tok/s baseline
     "Dell PowerEdge R7715 (RTX Pro 6000 BSE)",      # flagship Blackwell PCIe
     "Dell PowerEdge R7725 (H200 NVL)",              # NVLink-bridge (2–4 way islands)
     "Dell PowerEdge R770 (L40S)",                   # Ada inference
@@ -726,7 +726,7 @@ _build_catalog()
 # and TFLOPS (node-wide dense + sparse) computed as per-GPU value × gpus_per_node.
 # This keeps DELL_SYSTEMS and GPU_SPECS in lockstep — and is what corrects the
 # H100 NVL / 94GB memory (HBM3 @ 3.9 TB/s, not HBM2 @ 2.0). Systems without a
-# `gpu_spec` (e.g. Dell GB10) keep their explicit values. The flat `tflops_fp16/8/4`
+# `gpu_spec` (e.g. Dell Pro Max GB10) keep their explicit values. The flat `tflops_fp16/8/4`
 # keys are preserved (set to the node-wide DENSE figure) for backward compat.
 
 def aggregate_tflops(gpu_spec_name: str, gpus: int) -> dict[str, dict]:
@@ -813,7 +813,7 @@ def interconnect_efficiency(sys: dict, gpus_per_model: int, nodes_per_copy: int)
     return intra_eff, inter_eff, round(intra_eff * inter_eff, 4)
 
 # ---------------------------------------------------------------------------
-# Extended Model Catalog (includes models too large for Dell GB10)
+# Extended Model Catalog (includes models too large for Dell Pro Max GB10)
 # ---------------------------------------------------------------------------
 
 MODEL_CATALOG: dict[str, dict] = {
@@ -897,7 +897,7 @@ _BYTES_PER_PARAM = {
     "INT8": 1.0, "FP8": 1.0, "FP4": 0.5, "NVFP4": 0.5,
 }
 
-GB10_BW_GBS = 273  # Dell GB10 real LPDDR5X unified-memory bandwidth (NOT the 900 GB/s
+GB10_BW_GBS = 273  # Dell Pro Max GB10 real LPDDR5X unified-memory bandwidth (NOT the 900 GB/s
                    # NVLink-C2C link, and not "4 TB/s"). This is the decode-relevant
                    # ceiling and the baseline all systems scale against.
 
@@ -922,7 +922,7 @@ MC_BW_EFF = 0.80
 # Memory-bandwidth contention when several whole model copies share ONE physical
 # GPU. k co-resident copies each re-read their own weights from the same HBM/LPDDR,
 # so they cannot each enjoy the full per-GPU bandwidth — without this, a big-VRAM /
-# low-bandwidth part (e.g. Dell GB10's 128 GB @ 273 GB/s) gets "free" aggregate just by
+# low-bandwidth part (e.g. Dell Pro Max GB10's 128 GB @ 273 GB/s) gets "free" aggregate just by
 # packing more copies in, which physics doesn't allow. We model aggregate per-GPU
 # throughput as scaling ∝ k**_COPY_BW_SHARE_EXP, so PER-COPY speed scales
 # ∝ k**(_COPY_BW_SHARE_EXP - 1):
@@ -936,7 +936,7 @@ _COPY_BW_SHARE_EXP = 0.5
 # Fleet-coordination overhead: a deployment of N nodes is NOT N× a single node. It
 # needs more networking (switches, cabling, spine), orchestration, monitoring,
 # spares/redundancy, and floor/power distribution — and a stack of independent
-# boxes gets no cross-node batching. So a 200-desktop Dell GB10 fleet shouldn't cost-model
+# boxes gets no cross-node batching. So a 200-desktop Dell Pro Max GB10 fleet shouldn't cost-model
 # like one unit ×200. We add a CapEx overhead that grows with node count, on TOP of
 # the flat add_infra_pct. Logarithmic: mild at datacenter scale (a handful of nodes),
 # real for sprawl (hundreds), capped so it never runs away. Applies to every system
@@ -1192,7 +1192,7 @@ def scale_throughput(
     gb10_bw_gbs: float = GB10_BW_GBS,
 ) -> float:
     """
-    Scale measured Dell GB10 throughput to a target system.
+    Scale measured Dell Pro Max GB10 throughput to a target system.
     LLM decode is memory-bandwidth bound → throughput scales with BW ratio.
     Multi-GPU NVLink efficiency: -8% per GPU beyond the first (floor 70%).
     """

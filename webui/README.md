@@ -1,4 +1,4 @@
-# Dell GB10 Demo Suite - Streamlit WebUI
+# Dell Pro Max GB10 Demo Suite - Streamlit WebUI
 
 Interactive web interface for benchmarking model inference across multiple precisions (FP4-FP32).
 
@@ -172,7 +172,7 @@ class CustomBenchmark:
 
 Then import and use in `streamlit_app.py`.
 
-## Performance Expectations (Dell GB10)
+## Performance Expectations (Dell Pro Max GB10)
 
 | Model | Precision | Latency | Memory | Speedup |
 |-------|-----------|---------|--------|---------|
@@ -194,4 +194,4 @@ For issues or questions:
 ---
 
 **Created**: 2026-06-09  
-**For**: Dell GB10 Sales Demos
+**For**: Dell Pro Max GB10 Sales Demos
