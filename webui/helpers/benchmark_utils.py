@@ -41,6 +41,12 @@ class BenchmarkMetrics:
     def __init__(self, model_name: str, precision: str):
         self.model_name = model_name
         self.precision = precision
+        # The precision the model ACTUALLY ran at, which can differ from the
+        # requested one — e.g. FP16 on a BF16-native model runs as BF16 (a raw
+        # FP16 cast overflows BF16-trained activations → NaN/garbage). precision_note
+        # explains any such substitution for honest display.
+        self.effective_precision: str = precision
+        self.precision_note: str = ""
         # Core perf
         self.latency_ms: float = 0.0
         self.memory_mb: float = 0.0

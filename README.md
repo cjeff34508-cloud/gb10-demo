@@ -1,6 +1,6 @@
-# GB10 Demo Suite
+# Dell GB10 Demo Suite
 
-A sales-demo benchmark suite for the **NVIDIA GB10 / GH200 (Grace-Blackwell, aarch64)**.
+A sales-demo benchmark suite for the **Dell GB10 (Grace-Blackwell, aarch64)**.
 It benchmarks LLM / VLM / CNN / HPC workloads across precisions (FP4, FP8, FP16, FP32,
 FP64) and surfaces **business-relevant output** — bottleneck classification, TCO, and
 hardware-fit recommendations — in a Streamlit UI organized **by failure-mode scenario**,
@@ -13,17 +13,17 @@ not by modality.
 - **Phase-separated benchmarking** — load / prefill / decode timed independently, with
   warm-cache fairness so per-precision load times are comparable.
 - **Precision sweep** — FP4 / NVFP4 / FP8 / INT8 / FP16 / BF16 / FP32 via bitsandbytes +
-  native dtypes, with honest notes on what GB10's HF stack actually computes (e.g. NVFP4
+  native dtypes, with honest notes on what the Dell GB10's HF stack actually computes (e.g. NVFP4
   decompresses to BF16 — see `CLAUDE.md`).
 - **TCO engine** (`webui/helpers/tco_engine.py`) — Dell PowerEdge XE catalog, per-GPU
   spec sheet (`GPU_SPECS`), bandwidth-contention and fleet-coordination modeling, and a
   hardware-fit recommendation. Two rating profiles:
-  - **LLM Inference** — per-user tok/s + $/MTok, anchored on *measured* GB10 throughput.
+  - **LLM Inference** — per-user tok/s + $/MTok, anchored on *measured* Dell GB10 throughput.
   - **FinTech / Bandwidth-bound** — sizes a **Monte-Carlo** workload (resident paths ×
     bytes/path, timesteps, target paths/sec) to the fewest GPUs that fit the working set
     and meet the demanded memory bandwidth; ranks Dell platforms by $/B-paths.
 - **On-device AI narrator** (`webui/helpers/on_device_ai.py`) — a local instruct model
-  that narrates results and the TCO recommendation *on the GB10*, no cloud.
+  that narrates results and the TCO recommendation *on the Dell GB10*, no cloud.
 
 ## Layout
 
@@ -37,7 +37,7 @@ not by modality.
 
 ## Requirements
 
-- Ubuntu 24.04 LTS **aarch64**, NVIDIA **GH200 / GB10**, CUDA 13.0
+- Ubuntu 24.04 LTS **aarch64**, **Dell GB10**, CUDA 13.0
 - Python 3.12+, cuDNN 9.13, TensorRT 11.0
 - 128 GB unified memory (CPU+GPU share the pool; ~100 GB usable)
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# GB10 Demo Suite - WebUI Quick Start
+# Dell GB10 Demo Suite - WebUI Quick Start
 # Run this script to launch the Streamlit app
 
 set -euo pipefail
@@ -8,7 +8,7 @@ PROJECT_DIR="$HOME/gb10-demo"
 VENV_PATH="$PROJECT_DIR/env/llm"
 
 echo "======================================"
-echo "GB10 Demo Suite - WebUI Launcher"
+echo "Dell GB10 Demo Suite - WebUI Launcher"
 echo "======================================"
 echo ""
 

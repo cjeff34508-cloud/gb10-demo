@@ -4,7 +4,7 @@ import torch
 from typing import Any, Dict, Optional
 
 # Reference cost basis: H100 SXM5 on-demand ~$3.50/hr
-# Used to frame GB10 value — "what would this cost you on cloud?"
+# Used to frame Dell GB10 value — "what would this cost you on cloud?"
 _REFERENCE_HOURLY_USD = 3.50
 
 

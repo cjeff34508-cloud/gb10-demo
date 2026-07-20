@@ -12,7 +12,7 @@ from transformers import (
 
 from .benchmark_utils import BenchmarkMetrics, get_gpu_peak_memory_mb, get_total_vram_mb
 from .mem_guard import fits_in_memory, estimate_model_gb, GB10_USABLE_GB, GB10_RESERVE_GB
-from .model_info import precision_compatible
+from .model_info import precision_compatible, designed_precision
 
 _MODELS_BASE = Path.home() / "gb10-demo" / "models"
 _MODELS_DIR  = _MODELS_BASE / "llm-models"
@@ -101,6 +101,10 @@ class LLMInference:
         self._load_ms: float = 0.0
         self.incompatible: bool = False   # True if precision can't run on this checkpoint
         self.incompatible_reason: str = ""
+        # The precision actually used, which may differ from the requested one
+        # (e.g. FP16 → BF16 for a BF16-native model). Set in load_model().
+        self._effective_precision: str = precision
+        self._precision_note: str = ""
 
     def load_model(self) -> bool:
         # Purge any previously loaded model before allocating new GPU memory.
@@ -109,7 +113,7 @@ class LLMInference:
             print(f"Loading {self.model_name} in {self.precision}...")
             model_path = _local_path(self.model_name)
 
-            # Memory guard: refuse to load if estimated footprint exceeds usable GB10 memory.
+            # Memory guard: refuse to load if estimated footprint exceeds usable Dell GB10 memory.
             _ok, _est_gb = fits_in_memory(self.model_name, self.precision)
             if not _ok:
                 print(
@@ -142,7 +146,7 @@ class LLMInference:
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
 
-            # On GB10/GH200 unified memory, nvidia-smi/cuda mem_get_info is
+            # On Dell GB10 unified memory, nvidia-smi/cuda mem_get_info is
             # unreliable, so device_map="auto" under-counts free VRAM once the
             # GPU holds any prior allocation (e.g. right after a benchmark) and
             # spuriously offloads layers to CPU — which makes bitsandbytes refuse
@@ -167,7 +171,7 @@ class LLMInference:
                 if _is_prequantized_nvfp4(self.model_name):
                     # Pre-quantized FP4 checkpoint — weights are already packed
                     # 4-bit, so loading skips the huge BF16 staging that OOMs the
-                    # GB10. NOTE: do NOT pass ignore_mismatched_sizes=True — that
+                    # Dell GB10. NOTE: do NOT pass ignore_mismatched_sizes=True — that
                     # silently re-inits mismatched layers with random weights and
                     # reports false success. Let a bad checkpoint fail loudly.
                     #
@@ -213,15 +217,60 @@ class LLMInference:
                         return False
 
             elif self.precision == "FP16":
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    model_path, torch_dtype=torch.float16,
-                    device_map="auto", max_memory=_max_memory,
-                )
+                # FP16 and BF16 are both 16-bit, but FP16 has only a 5-bit exponent
+                # (max ±65504) vs BF16's 8-bit (±3e38). A model trained in BF16 has
+                # activations that overflow FP16 → inf/NaN → garbage compute (the run
+                # still times, so the metrics look plausible but are meaningless). For
+                # a BF16-native model the correct 16-bit format is BF16, so run it as
+                # BF16 and record the substitution for honest display. True FP16 is kept
+                # for genuinely FP16-native checkpoints (e.g. the CLIP/ViT vision path).
+                _native = (designed_precision(self.model_name)[0] or "").upper()
+                if _native == "BF16":
+                    self._effective_precision = "BF16"
+                    self._precision_note = (
+                        "FP16 invalid for BF16-native model → ran as BF16"
+                    )
+                    print("↪ FP16 requested on a BF16-native model — running as BF16 "
+                          "(a raw FP16 cast overflows BF16-trained activations).")
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        model_path, torch_dtype=torch.bfloat16,
+                        device_map="auto", max_memory=_max_memory,
+                    )
+                else:
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        model_path, torch_dtype=torch.float16,
+                        device_map="auto", max_memory=_max_memory,
+                    )
             elif self.precision == "BF16":
                 self.model = AutoModelForCausalLM.from_pretrained(
                     model_path, torch_dtype=torch.bfloat16,
                     device_map="auto", max_memory=_max_memory,
                 )
+            elif self.precision == "FP8":
+                # Real FP8 (e4m3) via torchao: weights are stored float8_e4m3fn and
+                # activations are dynamically quantized per-tensor → true FP8 tensor-core
+                # matmuls on Blackwell. Unlike a naive FP16 cast, the per-tensor SCALE
+                # absorbs BF16-trained ranges, so output stays coherent. Validated on this
+                # Dell GB10 (sm_121, aarch64): Float8Tensor weights (~1 byte/param), coherent
+                # generation. Never silently fall back to a wider dtype — fail loudly so the
+                # UI reports it (consistent with the INT8/FP4 branches).
+                try:
+                    from transformers import TorchAoConfig
+                    from torchao.quantization import (
+                        Float8DynamicActivationFloat8WeightConfig,
+                    )
+                    qcfg = TorchAoConfig(
+                        quant_type=Float8DynamicActivationFloat8WeightConfig()
+                    )
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        model_path, quantization_config=qcfg,
+                        torch_dtype=torch.bfloat16,
+                        device_map="auto", max_memory=_max_memory,
+                    )
+                    print("✓ Using torchao FP8 (e4m3, dynamic activation + weight)")
+                except Exception as e:
+                    print(f"✗ FP8 unavailable for {self.model_name}: {e}")
+                    return False
             else:  # FP32
                 self.model = AutoModelForCausalLM.from_pretrained(
                     model_path, device_map="auto", max_memory=_max_memory,
@@ -252,6 +301,8 @@ class LLMInference:
         OOM is caught and returned as a Memory Capacity result rather than crashing.
         """
         metrics = BenchmarkMetrics(self.model_name, self.precision)
+        metrics.effective_precision = self._effective_precision
+        metrics.precision_note = self._precision_note
 
         if self.model is None or self.tokenizer is None:
             metrics.error = "Model not loaded"
@@ -362,7 +413,7 @@ class LLMInference:
             # --- Serving metrics ---
             _qps_val  = batch_size / (avg_total_ms / 1000) if avg_total_ms > 0 else 0
             _tpot_val = (decode_ms / max_new) if (max_new > 0 and decode_ms > 0) else 0
-            # Memory bandwidth utilisation: model bytes read per second vs GB10's real
+            # Memory bandwidth utilisation: model bytes read per second vs Dell GB10's real
             # LPDDR5X unified-memory bandwidth (~273 GB/s). NVLink-C2C (900 GB/s) and the
             # "4 TB/s" interconnect figure are not the decode ceiling — LPDDR5X is.
             _model_gb  = peak_memory / 1024          # MB → GB
@@ -371,8 +422,11 @@ class LLMInference:
             # Estimated effective TFLOPS (2 MACs × params × tokens / decode_time)
             _params_b  = _estimate_params_b(self.model_name)
             _tflops_est = (2 * _params_b * max_new * batch_size) / max(decode_ms / 1000, 1e-6) / 1e3
+            # Key the theoretical ceiling off the precision actually used (a FP16
+            # request substituted to BF16 must use the BF16 ceiling, not FP16's).
             _theo_tf   = {"FP32": 250, "FP16": 500, "BF16": 500, "INT8": 500,
-                          "FP4": 1000, "NVFP4": 1000}.get(self.precision.split()[0], 500)
+                          "FP8": 1000, "FP4": 1000, "NVFP4": 1000}.get(
+                              self._effective_precision.split()[0], 500)
             _tfu       = min(100.0, _tflops_est / _theo_tf * 100)
             # P99 estimate from observed run spread
             _p99_est   = max(total_latencies) * 1.12 if total_latencies else 0
@@ -419,7 +473,7 @@ class LLMInference:
     def generate_text(self, prompt: str, max_new_tokens: int = 220) -> str:
         """
         Free-form generation using the currently-loaded model — runs entirely on the
-        GB10. Used to let the just-benchmarked model narrate its own results on-device.
+        Dell GB10. Used to let the just-benchmarked model narrate its own results on-device.
         Uses the tokenizer's chat template when available so instruct models behave.
         Returns "" if no model is loaded; never raises.
         """
@@ -465,7 +519,7 @@ class LLMInference:
     def generate_stream(self, prompt: str, system: Optional[str] = None,
                         max_new_tokens: int = 450):
         """
-        Token-by-token streaming generation on the GB10 — yields text pieces suitable
+        Token-by-token streaming generation on the Dell GB10 — yields text pieces suitable
         for st.write_stream(). Used by the on-device AI narrator. Yields a single
         notice string on failure rather than raising.
         """

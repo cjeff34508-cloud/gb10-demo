@@ -32,16 +32,26 @@ def _tf(dense: float, sparse: float | None = None) -> dict:
 
 GPU_SPECS: dict[str, dict] = {
     "RTX PRO 6000 BSE": {
+        # Server Edition figures (verified 2026-07-16, Lenovo Press lp2263 + NVIDIA).
+        # The catalog previously carried 1,800 GB/s / 300 W — those are the *Workstation*
+        # (1,792) and *Max-Q* (300 W) numbers. Same GB202 silicon, different power/clocks:
+        #   Server Edition   passive, configurable up to 600 W, 1,597 GB/s
+        #   Max-Q            blower, 300 W  ← if Dell ships XE7740/R7715 as Max-Q, use 300
         "arch": "Blackwell", "class": "PCIe DW server GPU",
-        "mem_gb": 96, "mem_type": "GDDR7", "mem_bw_gbs": 1_800,
-        "link": "PCIe Gen5 x16", "nvlink_gbs": 0, "gpu_tdp_w": 300,
+        "mem_gb": 96, "mem_type": "GDDR7", "mem_bw_gbs": 1_579,
+        "link": "PCIe Gen5 x16", "nvlink_gbs": 0, "gpu_tdp_w": 600,
         "rt_tflops": 380,  # RT Core ray-tracing throughput (not a tensor precision)
         "tflops": {
-            # AI headline "4,000 TOPS" FP4 = with-sparsity; dense is the 2:1 half
-            "FP4":  _tf(2_000, 4_000), "FP32": _tf(125), "FP64": _tf(1.97),
+            # Matrix headlines (FP4 4 / FP8 2 / FP16 1 PFLOPS) are with-sparsity; dense is the 2:1 half.
+            "FP4":  _tf(2_000, 4_000), "FP8":  _tf(1_000, 2_000),
+            "FP16": _tf(500, 1_000),   "BF16": _tf(500, 1_000),
+            "FP32": _tf(120), "FP64": _tf(1.9),   # FP64 estimated, not published
         },
-        "notes": "Dell positions for inference, fine-tuning, simulation, visual computing. No NVLink in Dell matrix. "
-                 "FP32 125 TFLOPS · FP64 1.97 TFLOPS · RT Core 380 TFLOPS · FP4 4,000 TOPS (≈4 PFLOPS, w/ sparsity).",
+        "notes": "GB202 · 96 GB GDDR7 @ 1,579 GB/s (512-bit) · x8 stack = 768 GB / 12.632 TB/s · "
+                 "PCIe Gen5 x16 · passive, up to 600 W. "
+                 "NO NVLink — verified: NVIDIA removed NVLink from the whole RTX PRO line (RTX A6000 had "
+                 "bridges, Ada dropped them, Blackwell did not bring them back), so multi-GPU is PCIe only. "
+                 "FP32 125 TFLOPS · FP64 1.97 TFLOPS · RT Core 380 TFLOPS · FP4 4,000 TOPS (w/ sparsity).",
     },
     "RTX PRO 4500 BSE": {
         "arch": "Blackwell", "class": "PCIe single-slot server GPU",
@@ -57,6 +67,55 @@ GPU_SPECS: dict[str, dict] = {
         },
         "notes": "GB203 · 10,496 CUDA cores · 82 RT cores · 32 GB GDDR7 @ 800 GB/s (256-bit) · single-slot "
                  "FHFL passive · 165 W · PCIe Gen5 x16, no NVLink · FP4 1.6 PFLOPS (w/ sparsity).",
+    },
+    "L40S": {
+        "arch": "Ada Lovelace", "class": "PCIe dual-slot passive",
+        "mem_gb": 48, "mem_type": "GDDR6 ECC", "mem_bw_gbs": 864,
+        "link": "PCIe Gen4 x16 (64 GB/s bidirectional)", "nvlink_gbs": 0, "gpu_tdp_w": 350,
+        "rt_tflops": 209,
+        "tflops": {
+            # NVIDIA datasheet headline numbers are "with sparsity"; dense is the 2:1 half.
+            "FP8":  _tf(733, 1_466), "FP16": _tf(362.05, 733),
+            "BF16": _tf(362.05, 733), "TF32": _tf(183, 366),
+            "FP32": _tf(91.6), "FP64": _tf(1.43),   # FP64 estimated, not published
+        },
+        "notes": "18,176 CUDA · 142 RT · 568 Tensor cores · 48 GB GDDR6 ECC @ 864 GB/s · 350 W · "
+                 "x8 stack = 384 GB / 6.912 TB/s · PCIe Gen4 x16 · NO NVLink — multi-GPU over PCIe only.",
+    },
+    "L4": {
+        "arch": "Ada Lovelace", "class": "PCIe single-slot low-profile",
+        "mem_gb": 24, "mem_type": "GDDR6", "mem_bw_gbs": 300,
+        "link": "PCIe Gen4 x16 (64 GB/s bidirectional)", "nvlink_gbs": 0, "gpu_tdp_w": 72,
+        "tflops": {
+            # NVIDIA quotes these with sparsity; dense is the 2:1 half.
+            "FP8":  _tf(242, 485), "FP16": _tf(121, 242),
+            "BF16": _tf(121, 242), "TF32": _tf(60, 120),
+            "FP32": _tf(30.3), "FP64": _tf(0.473),   # FP64 estimated, not published
+        },
+        "notes": "7,424 CUDA · 232 Tensor cores · 24 GB GDDR6 @ 300 GB/s · 72 W · 1-slot low-profile · "
+                 "x8 stack = 192 GB / 2.4 TB/s · PCIe Gen4 x16 · NO NVLink. Lowest-power part here.",
+    },
+    "A16": {
+        # Modelled at CARD level (64 GB / 800 GB/s / 250 W), because the platform matrix counts
+        # A16 *cards* — "R770, A16, 1, 2" means 1–2 cards, not GPUs. The card-level figures are
+        # exactly 4× the per-GPU ones (4 × 16 GB, 4 × 200 GB/s, 4 × 62.5 W, 4 × 17.9 TFLOPS).
+        #
+        # ⚠ KNOWN OPTIMISM: the card's 64 GB is four INDEPENDENT 16 GB GPUs with no NVLink, so a
+        # model cannot actually span them. The fit gate treats vram_gb as poolable and will
+        # therefore say a >16 GB model "fits" an A16 when physically it cannot. The source matrix
+        # flags the same caveat ("not a claim of memory pooling"). A16 is a VDI part — it is in the
+        # catalog for density/VDI comparison, not LLM serving. Do not read its LLM rows as real.
+        "arch": "Ampere", "class": "PCIe dual-slot passive (quad-GPU board)",
+        "mem_gb": 64, "mem_type": "GDDR6 ECC", "mem_bw_gbs": 800,
+        "link": "PCIe Gen4 x16 (64 GB/s bidirectional)", "nvlink_gbs": 0, "gpu_tdp_w": 250,
+        "gpus_per_board": 4,       # 4 × 16 GB @ 200 GB/s each — independent, NOT pooled
+        "mem_gb_per_die": 16,      # the real per-GPU limit an LLM actually sees
+        "tflops": {                # card totals, per the matrix (dense / sparse published explicitly)
+            "FP16": _tf(71.6, 143.6), "BF16": _tf(71.6, 143.6), "TF32": _tf(36, 72), "FP32": _tf(18),
+        },
+        "notes": "Quad-GPU VDI board: 4 × 16 GB GDDR6 ECC = 64 GB/card @ 800 GB/s aggregate, 250 W/card, "
+                 "PCIe Gen4, NO NVLink. x6 stack = 384 GB / 4.8 TB/s. Purpose-built for high-density VDI "
+                 "(≤64 sessions) — the four dies are independent and cannot pool memory for one model.",
     },
     "H100 PCIe": {
         "arch": "Hopper", "class": "PCIe Gen5 board",
@@ -81,7 +140,7 @@ GPU_SPECS: dict[str, dict] = {
     "H100 SXM5": {
         "arch": "Hopper", "class": "SXM5 / HGX",
         "mem_gb": 80, "mem_type": "HBM3", "mem_bw_gbs": 3_350,  # Dell matrix rounds to 3.0 TB/s
-        "link": "NVLink 900 GB/s + PCIe Gen5 128 GB/s", "nvlink_gbs": 900,
+        "link": "NVLink 900 GB/s + PCIe Gen5 128 GB/s", "nvlink_gbs": 900, "gpu_tdp_w": 700,
         "tflops": {
             "FP8":  _tf(1_979, 3_958), "FP16": _tf(990, 1_979),
             "BF16": _tf(990, 1_979),   "TF32": _tf(495, 990), "FP32": _tf(67),
@@ -91,49 +150,99 @@ GPU_SPECS: dict[str, dict] = {
     "H200 SXM5": {
         "arch": "Hopper", "class": "SXM5 / HGX",
         "mem_gb": 141, "mem_type": "HBM3e", "mem_bw_gbs": 4_800,
-        "link": "NVLink 900 GB/s + PCIe Gen5 x16", "nvlink_gbs": 900,
+        "link": "NVLink 900 GB/s + PCIe Gen5 x16", "nvlink_gbs": 900, "gpu_tdp_w": 700,
         "tflops": {  # same Hopper compute as H100 SXM5; the uplift is memory capacity/BW
             "FP8":  _tf(1_979, 3_958), "FP16": _tf(990, 1_979),
-            "BF16": _tf(990, 1_979),   "TF32": _tf(495, 990), "FP32": _tf(67),
+            "BF16": _tf(990, 1_979),   "TF32": _tf(495, 990), "FP32": _tf(67), "FP64": _tf(34),
         },
-        "notes": "Same Hopper tensor throughput as H100 SXM5; Dell emphasizes the 141 GB / 4.8 TB/s memory uplift.",
+        "notes": "Same Hopper tensor throughput as H100 SXM5; Dell emphasizes the 141 GB / 4.8 TB/s memory "
+                 "uplift. 700 W per GPU · x8 HGX stack = 1.128 TB / 38.4 TB/s.",
     },
     "H200 NVL": {
+        # The NVL card is NOT an SXM5 at a different price: it is power-limited (600 W vs 700 W),
+        # so its tensor peaks are lower. The catalog previously copied the SXM5 figures here.
         "arch": "Hopper", "class": "PCIe dual-slot (NVL)",
         "mem_gb": 141, "mem_type": "HBM3e", "mem_bw_gbs": 4_800,
-        "link": "NVLink 900 GB/s bridge + PCIe Gen5 x16", "nvlink_gbs": 900,
-        "tflops": {  # Hopper compute, same as H200/H100 SXM5
-            "FP8":  _tf(1_979, 3_958), "FP16": _tf(990, 1_979),
-            "BF16": _tf(990, 1_979),   "TF32": _tf(495, 990), "FP32": _tf(67),
-        },
-        "notes": "PCIe NVL variant of H200 — 141 GB HBM3e @ 4.8 TB/s with 900 GB/s NVLink bridge (2-GPU islands).",
-    },
-    "B200": {
-        "arch": "Blackwell", "class": "SXM / HGX",
-        "mem_gb": 192, "mem_type": "HBM3E", "mem_bw_gbs": 8_000,
-        "link": "NVLink 5, 1.8 TB/s per GPU", "nvlink_gbs": 1_800, "max_power_w": 1_200,
+        "link": "NVLink 900 GB/s bridge (2- or 4-way) + PCIe Gen5 x16", "nvlink_gbs": 900,
+        "gpu_tdp_w": 600,   # up to 600 W, configurable down to 450 W
         "tflops": {
+            "FP8":  _tf(1_671, 3_341), "FP16": _tf(835, 1_671),
+            "BF16": _tf(835, 1_671),   "TF32": _tf(418, 835), "FP32": _tf(60), "FP64": _tf(30),
+        },
+        "notes": "PCIe NVL variant — 141 GB HBM3e @ 4.8 TB/s, 900 GB/s NVLink bridge in 2- or 4-GPU "
+                 "islands (x4 NVL4 stack = 564 GB / 19.2 TB/s). Up to 600 W. The only bridged part in "
+                 "this catalog — the sole user of the `nvlink-bridge` link class.",
+    },
+    # B200/B300 are split by cooling variant because the AC and PC builds genuinely differ:
+    # B300 AC carries 288 GB vs PC's 270 GB, and B200 AC/PC differ slightly in bandwidth.
+    # A single shared spec cannot represent both, and memory drives the model-fit gate.
+    # tflops below follow the supplied matrix (FP4 18 / FP8 9 / FP16 4.5 PFLOPS are the
+    # with-sparsity headlines; dense is the 2:1 half).
+    "B200 AC": {
+        "arch": "Blackwell", "class": "SXM / HGX (air-cooled)",
+        "mem_gb": 180, "mem_type": "HBM3e", "mem_bw_gbs": 7_700,
+        "link": "NVLink 5, 1.8 TB/s per GPU", "nvlink_gbs": 1_800, "gpu_tdp_w": 1_000,
+        "tflops": {
+            "FP4":  _tf(9_000, 18_000), "FP8":  _tf(4_500, 9_000),
+            "FP16": _tf(2_250, 4_500),  "BF16": _tf(2_250, 4_500),
+            "TF32": _tf(1_125, 2_250),  "FP32": _tf(75), "FP64": _tf(37),
+        },
+        "notes": "180 GB HBM3e @ 7.7 TB/s · 1,000 W per GPU · x8 HGX stack = 1.44 TB / 61.6 TB/s.",
+    },
+    "B200 PC": {
+        "arch": "Blackwell", "class": "SXM / HGX (liquid-cooled)",
+        "mem_gb": 180, "mem_type": "HBM3e", "mem_bw_gbs": 7_750,
+        "link": "NVLink 5, 1.8 TB/s per GPU", "nvlink_gbs": 1_800, "gpu_tdp_w": 1_000,
+        "tflops": {
+            "FP4":  _tf(9_000, 18_000), "FP8":  _tf(4_500, 9_000),
+            "FP16": _tf(2_250, 4_500),  "BF16": _tf(2_250, 4_500),
+            "TF32": _tf(1_125, 2_250),  "FP32": _tf(75), "FP64": _tf(37),
+        },
+        "notes": "180 GB HBM3e @ 7.75 TB/s · 1,000 W per GPU · x8 HGX stack = 1.44 TB / 62 TB/s.",
+    },
+    "B300 AC": {
+        "arch": "Blackwell Ultra", "class": "SXM / HGX (air-cooled)",
+        "mem_gb": 288, "mem_type": "HBM3e", "mem_bw_gbs": 8_000,
+        "link": "NVLink 5, 1.8 TB/s per GPU", "nvlink_gbs": 1_800, "gpu_tdp_w": 1_100,
+        "tflops": {
+            "FP4":  _tf(9_000, 18_000), "FP8":  _tf(4_500, 9_000),
+            "FP16": _tf(2_250, 4_500),  "BF16": _tf(2_250, 4_500),
+            "TF32": _tf(1_125, 2_250),  "FP32": _tf(75), "FP64": _tf(1.25),
+        },
+        "notes": "288 GB HBM3e @ 8 TB/s · 1,100 W per GPU · x8 HGX stack = 2.304 TB / 64 TB/s. "
+                 "Note FP64 is only 1.25 TFLOPS — Blackwell Ultra trades FP64 for low-precision AI.",
+    },
+    "B300 PC": {
+        "arch": "Blackwell Ultra", "class": "SXM / NVL8 (liquid-cooled)",
+        "mem_gb": 270, "mem_type": "HBM3e", "mem_bw_gbs": 8_000,   # PC build carries 270 GB, not 288
+        "link": "NVLink 5, 1.8 TB/s per GPU", "nvlink_gbs": 1_800, "gpu_tdp_w": 1_100,
+        "tflops": {
+            "FP4":  _tf(9_000, 18_000), "FP8":  _tf(4_500, 9_000),
+            "FP16": _tf(2_250, 4_500),  "BF16": _tf(2_250, 4_500),
+            "TF32": _tf(1_125, 2_250),  "FP32": _tf(75), "FP64": _tf(1.25),
+        },
+        "notes": "270 GB HBM3e @ 8 TB/s · 1,100 W per GPU · x8 NVL8 stack = 2.16 TB / 64 TB/s.",
+    },
+    # NVL4 is a fixed 4-GPU system whose published total is 744 GB / 32 TB/s. Deriving from the
+    # generic GB200 (192 GB) would give 768 GB, so the NVL4 build gets its own per-GPU spec that
+    # multiplies up to the real system totals: 4 × 186 = 744 GB, 4 × 8,000 = 32 TB/s.
+    "GB200 NVL4": {
+        "arch": "Grace Blackwell superchip", "class": "NVL4 fixed system",
+        "mem_gb": 186, "mem_type": "HBM3e", "mem_bw_gbs": 8_000,
+        "link": "NVLink 5 + NVLink-C2C 900 GB/s CPU↔GPU", "nvlink_gbs": 1_800, "gpu_tdp_w": 700,
+        "tflops": {  # matrix gives NVL4 system totals; per-GPU = /4
             "FP4":  _tf(10_000, 20_000), "FP8":  _tf(5_000, 10_000),
-            "FP16": _tf(2_500, 5_000),   "BF16": _tf(2_500, 5_000),  # FP16 derived as FP8/2
-            "TF32": _tf(1_250, 2_500),
+            "FP16": _tf(2_500, 5_000),   "BF16": _tf(2_500, 5_000),
+            "TF32": _tf(1_250, 2_500),   "FP32": _tf(80), "FP64": _tf(40),
         },
-        "notes": "NVFP4 10 PFLOPS dense / 20 sparse; FP8 5/10 PFLOPS. Max power up to 1,200 W. FP16 derived (FP8÷2).",
-    },
-    "B300": {
-        "arch": "Blackwell Ultra", "class": "SXM / HGX",
-        "mem_gb": 288, "mem_type": "HBM3E", "mem_bw_gbs": 8_000,
-        "link": "NVLink 5, 1.8 TB/s per GPU", "nvlink_gbs": 1_800, "max_power_w": 1_400,
-        "tflops": {
-            "FP4":  _tf(15_000, 20_000), "FP8":  _tf(5_000, 10_000),
-            "FP16": _tf(2_500, 5_000),   "BF16": _tf(2_500, 5_000),  # FP16 derived as FP8/2
-            "TF32": _tf(1_250, 2_500),
-        },
-        "notes": "NVFP4 15 PFLOPS dense / 20 sparse; FP8 5/10 PFLOPS. Max power up to 1,400 W. FP16 derived (FP8÷2).",
+        "notes": "Fixed NVL4 system: 744 GB HBM3e / 32 TB/s total · FP4 80 PFLOPS · FP8 40 PFLOPS · "
+                 "FP16 20 PFLOPS · FP32 320 TFLOPS · FP64 160 TFLOPS · 700 W per GPU (2.8 kW GPU complex).",
     },
     "GB200": {
         "arch": "Grace Blackwell superchip", "class": "NVL72-class",
         "mem_gb": 192, "mem_type": "HBM3E", "mem_bw_gbs": 8_000,  # per Blackwell GPU
         "link": "NVLink 5 1.8 TB/s per GPU + NVLink-C2C 900 GB/s CPU↔GPU", "nvlink_gbs": 1_800,
+        "gpu_tdp_w": 700,
         "tflops": {  # per Blackwell GPU (same silicon as B200)
             "FP4":  _tf(10_000, 20_000), "FP8":  _tf(5_000, 10_000),
             "FP16": _tf(2_500, 5_000),   "BF16": _tf(2_500, 5_000),   "TF32": _tf(1_250, 2_500),
@@ -143,14 +252,15 @@ GPU_SPECS: dict[str, dict] = {
     },
     "GB300": {
         "arch": "Grace Blackwell Ultra superchip", "class": "NVL72-class",
-        "mem_gb": 288, "mem_type": "HBM3E", "mem_bw_gbs": 8_000,  # per Blackwell Ultra GPU
+        "mem_gb": 288, "mem_type": "HBM3e", "mem_bw_gbs": 8_000,  # per GPU → ×72 = 20.736 TB / 576 TB/s
         "link": "NVLink 5 / NVLink switching + ConnectX-8 800 Gb/s", "nvlink_gbs": 1_800,
-        "tflops": {  # per Blackwell Ultra GPU (same silicon as B300)
+        "gpu_tdp_w": 1_100,   # rack power is set explicitly on XE9712 (136 kW), not derived from this
+        "tflops": {  # per Blackwell Ultra GPU — matrix NVL72 totals ÷ 72
             "FP4":  _tf(15_000, 20_000), "FP8":  _tf(5_000, 10_000),
             "FP16": _tf(2_500, 5_000),   "BF16": _tf(2_500, 5_000),   "TF32": _tf(1_250, 2_500),
         },
-        "notes": "Up to 1 TB unified memory per superchip; 30 PFLOPS dense NVFP4 per superchip. "
-                 "GB300 NVL72 reaches 1.1 exaFLOPS dense FP4; Dell cites 50× AI-reasoning output vs Hopper.",
+        "notes": "NVL72 rack totals: 20.736 TB HBM3e / 576 TB/s · FP4 1,080 PFLOPS · FP8 720 PFLOPS · "
+                 "FP16 360 PFLOPS · FP32 6 PFLOPS · FP64 100 TFLOPS · 136 kW per rack.",
     },
     "Vera Rubin / VR200": {
         "arch": "Rubin (planned)", "class": "HGX Rubin NVL8 / Vera Rubin platform",
@@ -171,13 +281,38 @@ GPU_SPECS: dict[str, dict] = {
 # Dell System Catalog
 # ---------------------------------------------------------------------------
 
+# The catalog is DATA (PLATFORMS + _CATALOG_ROWS) plus a builder, not ~75 hand-written
+# dicts. Every row is a chassis plus a linear per-GPU cost/power, which is exactly what
+# node_price()/node_tdp_w() already model, so there is no new pricing mechanism here.
+#
+# Three pricing shapes:
+#   1. Flexible (base + GPUs)  — R-series, XE7745/7740, edge. price = platform + N × gpu_price
+#   2. Fixed x8 (base + 8)     — XE97xx HGX. Same mechanism with min_gpus == max_gpus == 8.
+#   3. Fixed, GPU-INCLUSIVE    — XE8712 NVL4, XE9712 NVL72, Dell GB10. Flat `system_price`
+#                                already contains the accelerators; the per-GPU figure is a
+#                                modeling reference and is NEVER added on top.
+#
+# Source: Dell 17G/16G platform matrix supplied 2026-07-16. Prices are simulated list-price
+# estimates for internal modeling only — NOT quote-ready. 15G platforms intentionally omitted.
+# GPUs off the current matrix for EOL/EOML (H100 NVL, L40, HGX H200 x4, HGX H100 x4) omitted.
+#
+# PRICE OUTLIERS — deliberate, do NOT "fix": near-identical boxes disagree in the source
+# (XE9680L $570K vs XE9685L $125K, both B200 PC x8; XE9780 B300 $250K vs XE9785 $75K). Per the
+# data owner the higher figure stands ("memory prices are climbing"); entered verbatim, unnormalized.
+#
+# CHASSIS POWER: per the data owner (2026-07-16), assume a 1 kW platform base, and 1.5 kW for
+# 8-way servers (any platform that can hold 8 GPUs). This is the 0-GPU base only — per-GPU watts
+# come from GPU_SPECS[...]["gpu_tdp_w"] and are added on top by node_tdp_w(). Rack-scale rows do
+# not use the rule: they carry the published system figure (NVL4 GPU complex 2.8 kW + base;
+# NVL72 136 kW per rack).
+
 DELL_SYSTEMS: dict[str, dict] = {
-    "DGX Spark (GB10 SuperChip)": {
+    "Dell GB10": {
         "category":        "Edge / Workstation",
-        "system_price":    8_000,
+        "system_price":    8_000,        # GPU-inclusive (shape 3) — the superchip IS the system
         "gpus_per_node":   1,
-        "gpu_spec":        None,          # GB10 not in supplied spec sheet — keep explicit values
-        "gpu_model":       "GB10 (Grace-Blackwell)",
+        "gpu_spec":        None,          # Dell GB10 not in supplied spec sheet — keep explicit values
+        "gpu_model":       "Dell GB10 (Grace-Blackwell)",
         "vram_gb":         128,          # unified LPDDR5X
         "gpu_bw_gbs":      273,          # real LPDDR5X memory BW (~273 GB/s), not NVLink-C2C 900
         "tflops_fp16":     500,
@@ -191,99 +326,22 @@ DELL_SYSTEMS: dict[str, dict] = {
         "gpu_link":        "none",       # single GPU — no in-box GPU-to-GPU fabric
         "link_label":      "Single GPU",
         "net":             "10 GbE",
-        "color":           "#76B900",    # NVIDIA green
+        "arch_family":     "Grace-Blackwell",
+        "color":           "#2a78d6",    # = ARCH_COLORS["Grace-Blackwell"] (defined below)
         "notes":           "Current demo HW · 128 GB unified · lowest $/watt",
         "best_for":        ["LLM ≤32B FP16", "FinTech edge", "VLM batch ≤64"],
     },
-    "Dell PowerEdge XE7745 (2-8× RTX PRO 4500 32GB)": {
-        "category":        "Blackwell Gen",
-        "gpus_per_node":   8,            # max config; PCIe box — can be partially populated
-        "flexible_gpus":   True,         # populate 2..8 GPUs; cost/power scale with count
-        "min_gpus":        2,
-        "max_gpus":        8,
-        "gpu_spec":        "RTX PRO 4500 BSE",  # 32 GB GDDR7 @ 800 GB/s — derives per-GPU VRAM / BW / TFLOPS
-        "gpu_model":       "RTX PRO 4500 BSE 32GB (GDDR7)",
-        # Cost / power decompose into a fixed chassis + per-GPU so partial builds price fairly.
-        "chassis_price":   120_000,      # dual Xeon, RAM, 2× CX-7, PSUs, NVMe (0-GPU base)
-        "gpu_price":       7_200,        # per RTX PRO 4500 Blackwell Server Edition (−20%)
-        "system_price":    177_600,      # = chassis + 8 × gpu (full config, catalog reference)
-        "chassis_tdp_w":   1_100,        # platform base (0-GPU)
-        "gpu_tdp_w":       165,          # per RTX PRO 4500
-        "system_tdp_w":    2_420,        # = chassis + 8 × 165 W (full config)
-        "rack_u":          4,
-        "nw_gbps":         800,          # 2× ConnectX-7 (400G each) for node-to-node
-        "nvlink":          False,        # No NVLink on RTX PRO 4500
-        "sxm":             False,
-        "gpu_link":        "pcie",       # RTX PRO 4500: PCIe Gen5 only
-        "link_label":      "PCIe Gen5",
-        "net":             "2× ConnectX-7 400G IB",
-        "color":           "#00A4A4",
-        "notes":           "Flexible 4U PCIe box · 2–8× RTX PRO 4500 (single-slot, 165 W) · 32 GB GDDR7 @ "
-                           "800 GB/s/GPU · no NVLink, PCIe Gen5 spanning · partially populated to fit the "
-                           "workload (cost/power scale per GPU) · FP4 1.6 PFLOPS (sparse) per GPU · Blackwell gen",
-        "best_for":        ["Right-sized inference", "VLM/CNN serving", "Small-/mid-LLM multi-user"],
-    },
-    "Dell PowerEdge XE7740 (2-8× RTX PRO 6000 BSE 96GB)": {
-        "category":        "Blackwell Gen",
-        "gpus_per_node":   8,            # max config; PCIe box — can be partially populated
-        "flexible_gpus":   True,         # populate 2..8 GPUs; cost/power scale with count
-        "min_gpus":        2,
-        "max_gpus":        8,
-        "gpu_spec":        "RTX PRO 6000 BSE",  # 96 GB GDDR7 @ 1.8 TB/s — derives per-GPU VRAM / BW / TFLOPS
-        "gpu_model":       "RTX PRO 6000 BSE 96GB (GDDR7)",
-        "chassis_price":   120_000,      # dual Xeon, RAM, 2× CX-7, PSUs, NVMe (0-GPU base)
-        "gpu_price":       35_000,       # per RTX PRO 6000 Blackwell Server Edition
-        "system_price":    400_000,      # = chassis + 8 × gpu (full config, catalog reference)
-        "chassis_tdp_w":   1_100,        # platform base (0-GPU)
-        "gpu_tdp_w":       300,          # per RTX PRO 6000 BSE
-        "system_tdp_w":    3_500,        # = chassis + 8 × 300 W (full config)
-        "rack_u":          4,
-        "nw_gbps":         800,          # 2× ConnectX-7 for node-to-node
-        "nvlink":          False,        # No NVLink in RTX PRO 6000 BSE
-        "sxm":             False,
-        "gpu_link":        "pcie",       # RTX PRO 6000 BSE: PCIe Gen5 only
-        "link_label":      "PCIe Gen5",
-        "net":             "2× ConnectX-7 400G IB",
-        "color":           "#76B900",    # NVIDIA green
-        "notes":           "Flexible 4U PCIe box · 2–8× RTX PRO 6000 BSE · 96 GB GDDR7 @ 1.8 TB/s/GPU · no "
-                           "NVLink — compute-dense workloads over PCIe Gen5 · partially populated to fit the "
-                           "workload (cost/power scale per GPU) · FP4 4,000 TOPS (sparse) per GPU · Blackwell gen",
-        "best_for":        ["NVFP4 inference", "LLM ≤70B FP16", "Compute-heavy workloads"],
-    },
-    "Dell PowerEdge XE9640 (4× H100 SXM5 80GB)": {
-        "category":        "Current Gen",
-        "system_price":    260_000,
-        "gpus_per_node":   4,
-        "gpu_spec":        "H100 SXM5",  # derives VRAM / BW / TFLOPS
-        "gpu_model":       "H100 SXM5 80GB (HBM3)",
-        "vram_gb":         320,          # 4 × 80 GB HBM3
-        "gpu_bw_gbs":      13_400,       # 4 × 3,350 GB/s (3.35 TB/s/GPU)
-        "tflops_fp16":     3_960,        # 4 × 990 dense BF16/FP16 Tensor Core
-        "tflops_fp8":      7_916,        # 4 × 1,979 dense FP8 Tensor Core
-        "tflops_fp4":      0,            # Hopper — no FP4
-        "system_tdp_w":    5_500,        # 4 × ~700 W SXM5 + platform
-        "rack_u":          2,
-        "nw_gbps":         400,          # 1× ConnectX-7 — limited node-to-node scale-out
-        "nvlink":          True,
-        "sxm":             True,
-        "gpu_link":        "nvlink4",    # SXM5 NVLink-4 — fast tensor-parallel
-        "link_label":      "NVLink-4 (SXM5)",
-        "net":             "1× ConnectX-7 400G IB",
-        "color":           "#0090C0",
-        "notes":           "4× H100 80GB SXM5 · HBM3 3.35 TB/s/GPU · NVLink-4 — fast memory & links in compact 2U form factor; single CX-7 → weak multi-node scale-out",
-        "best_for":        ["LLM ≤32B FP16", "Low-latency serving", "FinTech HPC"],
-    },
+
+    # --- Legacy: not in the 2026-07 matrix, retained non-default -------------------------
+    # XE9640 (4× H100 SXM5) was DELETED — HGX H100 (x4) is EOL/EOML per the matrix notes.
+    # This H200 x4 row is likewise flagged EOL in those notes but is retained by request.
+    # No new pricing was supplied for XE9640, so its original figures stand.
     "Dell PowerEdge XE9640 (4× H200 SXM 141GB)": {
-        "category":        "Current Gen",
+        "category":        "Legacy",
         "system_price":    390_000,
         "gpus_per_node":   4,
         "gpu_spec":        "H200 SXM5",  # derives VRAM / BW / TFLOPS
         "gpu_model":       "H200 SXM 141GB",
-        "vram_gb":         564,          # 4 × 141 GB HBM3e
-        "gpu_bw_gbs":      19_200,       # 4 × 4,800 GB/s (4.8 TB/s/GPU)
-        "tflops_fp16":     3_960,        # 4 × 990 dense BF16/FP16 Tensor Core
-        "tflops_fp8":      7_916,        # 4 × 1,979 dense FP8 Tensor Core
-        "tflops_fp4":      0,            # Hopper — no FP4
         "system_tdp_w":    6_500,        # 4 × ~850 W SXM5 + platform
         "rack_u":          2,
         "nw_gbps":         400,          # 1× ConnectX-7 — limited node-to-node scale-out
@@ -292,63 +350,20 @@ DELL_SYSTEMS: dict[str, dict] = {
         "gpu_link":        "nvlink4",    # SXM5 NVLink-4 — fast tensor-parallel
         "link_label":      "NVLink-4 (SXM5)",
         "net":             "1× ConnectX-7 400G IB",
-        "color":           "#005090",
-        "notes":           "4× H200 141GB SXM · HBM3e 4.8 TB/s/GPU · 564 GB VRAM total · NVLink-4 — best per-GPU memory in 2U form factor; 70B FP16 fits in one node; single CX-7 → weak multi-node scale-out",
+        "arch_family":     "Hopper",
+        "color":           "#e87ba4",    # = ARCH_COLORS["Hopper"]
+        "notes":           "EOL/EOML — retained for comparison only. 4× H200 141GB SXM · HBM3e 4.8 TB/s/GPU · "
+                           "564 GB VRAM · NVLink-4; single CX-7 → weak multi-node scale-out",
         "best_for":        ["LLM 70B FP16", "Large context (32K+)", "FinTech HPC"],
     },
-
-    "Dell PowerEdge XE9780 (8× B200 SXM)": {
-        "category":        "Blackwell Gen",
-        "system_price":    780_000,
-        "gpus_per_node":   8,
-        "gpu_spec":        "B200",       # derives VRAM / BW / TFLOPS (NVFP4 10/20 PFLOPS, FP8 5/10)
-        "gpu_model":       "B200 SXM 192GB",
-        "vram_gb":         1_536,        # 8 × 192 GB HBM3e
-        "gpu_bw_gbs":      64_000,       # 8 × 8,000 GB/s
-        "tflops_fp16":     14_400,       # 8 × 1,800
-        "tflops_fp8":      28_800,
-        "tflops_fp4":      57_600,       # 8 × 7,200 — HW-accelerated
-        "system_tdp_w":    14_400,
-        "rack_u":          8,
-        "nw_gbps":         6_400,        # 8× ConnectX-8 (800G each) — top-tier multi-node scale-out
-        "nvlink":          True,
-        "sxm":             True,
-        "gpu_link":        "nvlink5",    # SXM NVLink-5 (1.8 TB/s)
-        "link_label":      "NVLink-5 (SXM)",
-        "net":             "8× ConnectX-8 800G IB",
-        "color":           "#E87722",
-        "notes":           "Blackwell + NVLink 5.0 · FP4 HW accel · ~29× memory BW vs GB10",
-        "best_for":        ["NVFP4 inference", "LLM 70B+ any precision", "FinTech Black-Scholes"],
-    },
-    "Dell PowerEdge XE9780 (8× B300 SXM)": {
-        "category":        "Blackwell Gen",
-        "system_price":    950_000,      # est. list — Blackwell Ultra premium over the B200 build
-        "gpus_per_node":   8,
-        "gpu_spec":        "B300",       # same XE9780 chassis, B300 (Blackwell Ultra) GPUs
-        "gpu_model":       "B300 SXM 288GB",
-        "vram_gb":         2_304,        # 8 × 288 GB HBM3E (derived)
-        "gpu_bw_gbs":      64_000,       # 8 × 8,000 GB/s (derived)
-        "system_tdp_w":    16_000,       # 8 × ~1,400 W GPU + platform
-        "rack_u":          8,
-        "nw_gbps":         6_400,        # 8× ConnectX-8 (800G each) — top-tier multi-node scale-out
-        "nvlink":          True,
-        "sxm":             True,
-        "gpu_link":        "nvlink5",    # SXM NVLink-5 (1.8 TB/s)
-        "link_label":      "NVLink-5 (SXM)",
-        "net":             "8× ConnectX-8 800G IB",
-        "color":           "#C8102E",    # deeper red — top Blackwell Ultra tier
-        "notes":           "Same XE9780 SXM chassis as the B200 build, with B300 (Blackwell Ultra) GPUs · "
-                           "2.3 TB VRAM · NVFP4 15 PFLOPS dense/GPU · 288 GB HBM3E for the largest models / context",
-        "best_for":        ["NVFP4 inference at scale", "LLM 405B FP8 (single node)", "Long-context serving"],
-    },
+    # GB200 NVL72 is absent from the 2026-07 matrix (which lists GB300 NVL72 via XE9712) but is
+    # not EOL-flagged either — retained non-default at its original price.
     "Dell NVL72 (GB200 NVL72 Rack)": {
-        "category":        "HPC / AI Factory",
-        "system_price":    5_200_000,
+        "category":        "Legacy",
+        "system_price":    5_200_000,    # GPU-inclusive (shape 3)
         "gpus_per_node":   72,           # atomic unit: one full 72-GPU NVLink rack
-        "gpu_spec":        "GB200",      # derives VRAM / BW / TFLOPS (per-GPU B200 silicon × 72)
+        "gpu_spec":        "GB200",      # derives VRAM / BW / TFLOPS
         "gpu_model":       "GB200 192GB",
-        "vram_gb":         13_824,       # 72 × 192 GB
-        "gpu_bw_gbs":      576_000,      # 72 × 8,000 GB/s
         "system_tdp_w":    120_000,
         "rack_u":          42,           # full rack
         "nw_gbps":         25_600,
@@ -358,33 +373,351 @@ DELL_SYSTEMS: dict[str, dict] = {
         "link_label":      "NVLink Switch (72-GPU rack)",
         "net":             "NVLink rack fabric",
         "rack_unit":       True,         # billed only in whole 72-GPU racks
-        "color":           "#00A4E4",
-        "notes":           "Rack-scale unit — minimum 72 GPUs · 13.8 TB VRAM · single NVLink domain (no slow cross-node hops within the rack)",
+        "arch_family":     "Grace-Blackwell",
+        "color":           "#2a78d6",    # = ARCH_COLORS["Grace-Blackwell"]
+        "notes":           "Not on the current matrix. Rack-scale unit — minimum 72 GPUs · 13.8 TB VRAM · "
+                           "single NVLink domain (no slow cross-node hops within the rack)",
         "best_for":        ["405B+ models", "Hyperscale LLM training", "Enterprise AI platform"],
     },
-    "Dell NVL72 (GB300 NVL72 Rack)": {
-        "category":        "HPC / AI Factory",
-        "system_price":    6_000_000,
-        "gpus_per_node":   72,           # atomic unit: one full 72-GPU NVLink rack
-        "gpu_spec":        "GB300",      # derives VRAM / BW / TFLOPS (per-GPU B300 silicon × 72)
-        "gpu_model":       "GB300 288GB",
-        "vram_gb":         20_736,       # 72 × 288 GB HBM3E (derived)
-        "gpu_bw_gbs":      576_000,      # 72 × 8,000 GB/s (derived)
-        "system_tdp_w":    140_000,      # Blackwell Ultra — higher per-GPU power than GB200
-        "rack_u":          42,           # full rack
-        "nw_gbps":         28_800,       # ConnectX-8 800G fabric
-        "nvlink":          True,
-        "sxm":             True,
-        "gpu_link":        "nvlink-switch",  # all 72 GPUs in one NVLink switch domain
-        "link_label":      "NVLink Switch (72-GPU rack)",
-        "net":             "NVLink rack fabric + ConnectX-8 800G",
-        "rack_unit":       True,         # billed only in whole 72-GPU racks
-        "color":           "#0072CE",
-        "notes":           "Blackwell Ultra rack — minimum 72 GPUs · 20.7 TB VRAM · NVFP4 15 PFLOPS dense/GPU · "
-                           "single NVLink domain · 1.1 exaFLOPS dense FP4 · Dell cites 50× AI-reasoning output vs Hopper",
-        "best_for":        ["Trillion-param inference", "AI-reasoning factories", "Hyperscale training"],
-    },
 }
+
+# ---------------------------------------------------------------------------
+# Platform (chassis) facts — one entry per platform, independent of the GPU
+# ---------------------------------------------------------------------------
+# chassis_tdp_w is the 0-GPU platform base (ESTIMATED — see header note).
+# nw_gbps drives the cross-node penalty in interconnect_efficiency() (400 = one ConnectX-7).
+
+_P = dict  # brevity for the table below
+
+PLATFORMS: dict[str, dict] = {
+    # --- 17G rack-scale (GPU-inclusive pricing) -------------------------------------
+    "XE8712":  _P(gen="17G", cat="Rack Scale",  u=10, tdp=3_800,   nw=3_200,  net="ConnectX-8 800G",
+                  desc="GB200 NVL4 — 4-GPU integrated NVLink node"),
+    "XE9712":  _P(gen="17G", cat="Rack Scale",  u=42, tdp=136_000, nw=28_800, net="NVLink rack fabric + ConnectX-8 800G",
+                  desc="GB300 NVL72 — 72-GPU integrated NVLink rack"),
+    # --- 17G 8-GPU HGX --------------------------------------------------------------
+    "XE9780":  _P(gen="17G", cat="8-GPU HGX",   u=8,  tdp=1_500, nw=6_400, net="8× ConnectX-8 800G IB", desc="8-GPU SXM air-cooled"),
+    "XE9785":  _P(gen="17G", cat="8-GPU HGX",   u=8,  tdp=1_500, nw=6_400, net="8× ConnectX-8 800G IB", desc="8-GPU SXM air-cooled"),
+    "XE9785L": _P(gen="17G", cat="8-GPU HGX",   u=8,  tdp=1_500, nw=6_400, net="8× ConnectX-8 800G IB", desc="8-GPU liquid-cooled"),
+    "XE9780L (GNR AP)": _P(gen="17G", cat="8-GPU HGX", u=8, tdp=1_500, nw=6_400, net="8× ConnectX-8 800G IB",
+                           desc="8-GPU liquid-cooled · Granite Rapids AP"),
+    "XE9780L (GNR SP)": _P(gen="17G", cat="8-GPU HGX", u=8, tdp=1_500, nw=6_400, net="8× ConnectX-8 800G IB",
+                           desc="8-GPU liquid-cooled · Granite Rapids SP"),
+    # --- 17G flexible PCIe boxes ----------------------------------------------------
+    "XE7745":  _P(gen="17G", cat="Flexible PCIe", u=4, tdp=1_500, nw=800, net="2× ConnectX-7 400G IB",
+                  desc="Flexible 4U PCIe box — partially populated to fit the workload"),
+    "XE7740":  _P(gen="17G", cat="Flexible PCIe", u=4, tdp=1_500, nw=800, net="2× ConnectX-7 400G IB",
+                  desc="Flexible 4U PCIe box — partially populated to fit the workload"),
+    # --- 17G mainstream servers -----------------------------------------------------
+    "R770":    _P(gen="17G", cat="Mainstream Server", u=2, tdp=1_000, nw=200, net="2× 100GbE", desc="2U dual-socket Xeon 6"),
+    "R7715":   _P(gen="17G", cat="Mainstream Server", u=2, tdp=1_000, nw=200, net="2× 100GbE", desc="2U single-socket EPYC"),
+    "R7725":   _P(gen="17G", cat="Mainstream Server", u=2, tdp=1_000, nw=200, net="2× 100GbE", desc="2U dual-socket EPYC"),
+    "R570":    _P(gen="17G", cat="Mainstream Server", u=2, tdp=1_000, nw=200, net="2× 25GbE",  desc="2U value platform"),
+    "R470":    _P(gen="17G", cat="Mainstream Server", u=2, tdp=1_000, nw=200, net="2× 25GbE",  desc="2U value platform"),
+    # --- 17G 1U density -------------------------------------------------------------
+    "R670":    _P(gen="17G", cat="Density 1U", u=1, tdp=1_000, nw=100, net="2× 25GbE", desc="1U dual-socket Xeon 6"),
+    "R6715":   _P(gen="17G", cat="Density 1U", u=1, tdp=1_000, nw=100, net="2× 25GbE", desc="1U single-socket EPYC"),
+    "R6725":   _P(gen="17G", cat="Density 1U", u=1, tdp=1_000, nw=100, net="2× 25GbE", desc="1U dual-socket EPYC"),
+
+    # --- 16G 8-GPU HGX --------------------------------------------------------------
+    "XE9680":  _P(gen="16G", cat="8-GPU HGX", u=6, tdp=1_500, nw=3_200, net="8× ConnectX-7 400G IB", desc="8-GPU SXM air-cooled"),
+    "XE9680L": _P(gen="16G", cat="8-GPU HGX", u=6, tdp=1_500, nw=3_200, net="8× ConnectX-7 400G IB", desc="8-GPU direct liquid-cooled"),
+    "XE9685L": _P(gen="16G", cat="8-GPU HGX", u=6, tdp=1_500, nw=3_200, net="8× ConnectX-7 400G IB", desc="8-GPU direct liquid-cooled"),
+    # --- 16G mainstream servers -----------------------------------------------------
+    "R760XA":  _P(gen="16G", cat="Mainstream Server", u=2, tdp=1_500,   nw=200, net="2× 100GbE", desc="2U GPU-dense platform"),
+    "R760":    _P(gen="16G", cat="Mainstream Server", u=2, tdp=1_000,   nw=200, net="2× 100GbE", desc="2U dual-socket Xeon"),
+    "R760xd2": _P(gen="16G", cat="Mainstream Server", u=2, tdp=1_000,   nw=200, net="2× 25GbE",  desc="2U storage-dense platform"),
+    "R7625":   _P(gen="16G", cat="Mainstream Server", u=2, tdp=1_000,   nw=200, net="2× 100GbE", desc="2U dual-socket EPYC"),
+    "R7615":   _P(gen="16G", cat="Mainstream Server", u=2, tdp=1_000,   nw=200, net="2× 100GbE", desc="2U single-socket EPYC"),
+    "R960":    _P(gen="16G", cat="Mainstream Server", u=4, tdp=1_000, nw=200, net="2× 100GbE", desc="4U four-socket Xeon"),
+    # --- 16G 1U density -------------------------------------------------------------
+    "R660":    _P(gen="16G", cat="Density 1U", u=1, tdp=1_000, nw=100, net="2× 25GbE", desc="1U dual-socket Xeon"),
+    "R6615":   _P(gen="16G", cat="Density 1U", u=1, tdp=1_000, nw=100, net="2× 25GbE", desc="1U single-socket EPYC"),
+    "R6625":   _P(gen="16G", cat="Density 1U", u=1, tdp=1_000, nw=100, net="2× 25GbE", desc="1U dual-socket EPYC"),
+    # --- 16G edge / tower -----------------------------------------------------------
+    "T560":    _P(gen="16G", cat="Edge / Rugged", u=5, tdp=1_000, nw=50, net="2× 25GbE", desc="Tower platform"),
+    "XR7620":  _P(gen="16G", cat="Edge / Rugged", u=2, tdp=1_000,   nw=50, net="2× 25GbE", desc="Short-depth rugged edge"),
+    "XR5610":  _P(gen="16G", cat="Edge / Rugged", u=1, tdp=1_000,   nw=50, net="2× 25GbE", desc="Short-depth rugged edge"),
+    "XR8620t": _P(gen="16G", cat="Edge / Rugged", u=2, tdp=1_000,   nw=50, net="2× 25GbE", desc="Telecom rugged edge"),
+}
+
+# ---------------------------------------------------------------------------
+# Catalog rows: (platform, gpu_spec, gpu_label, min_gpus, max_gpus, platform_price, gpu_price)
+# ---------------------------------------------------------------------------
+# gpu_label is the matrix's own "Current NVIDIA GPU model" text — it keeps keys faithful to the
+# source AND unique per platform (XE9780 B200 AC vs B300 AC). gpu_spec must exist in GPU_SPECS;
+# _validate_catalog() enforces that at import.
+
+_CATALOG_ROWS: list[tuple] = [
+    # ---- 17G rack-scale — GPU-INCLUSIVE: gpu_price is a reference, never added -------
+    ("XE8712",  "GB200 NVL4", "GB200 NVL4", 4, 4,   993_000, 248_250),
+    ("XE9712",  "GB300", "GB300 NVL72",  72, 72, 6_200_000,  86_111),
+    # ---- 17G 8-GPU HGX (base + 8 × GPU) ---------------------------------------------
+    ("XE9785",  "B300 AC", "B300 AC (x8)", 8,  8,    75_000,  53_000),   # ⚠ outlier vs XE9780 B300 $250K
+    ("XE9780",  "B200 AC", "B200 AC (x8)", 8,  8,   250_000,  47_500),
+    ("XE9780",  "B300 AC", "B300 AC (x8)", 8,  8,   250_000,  53_000),
+    ("XE9785L", "B300 PC", "B300 PC (x8)", 8,  8,   150_000,  53_000),
+    ("XE9785L", "B200 PC", "B200 PC (x8)", 8,  8,   150_000,  47_500),
+    ("XE9780L (GNR AP)", "B300 PC", "B300 PC (x8)", 8, 8, 200_000, 53_000),
+    ("XE9780L (GNR SP)", "B300 PC", "B300 PC (x8)", 8, 8, 185_000, 53_000),
+    ("XE9780L (GNR SP)", "B200 PC", "B200 PC (x8)", 8, 8, 185_000, 47_500),
+    # ---- 17G flexible PCIe ----------------------------------------------------------
+    ("XE7745", "RTX PRO 6000 BSE", "RTX Pro 6000 BSE", 1, 8, 35_000, 13_500),
+    ("XE7745", "RTX PRO 4500 BSE", "RTX Pro 4500 BSE", 1, 8, 35_000,  3_800),
+    ("XE7745", "H200 NVL",         "H200 NVL",         1, 8, 35_000, 34_500),
+    ("XE7745", "L40S",             "L40S",             1, 8, 35_000,  9_971),
+    ("XE7745", "L4",               "L4",               1, 6, 35_000,  4_200),
+    ("XE7740", "RTX PRO 6000 BSE", "RTX Pro 6000 BSE", 1, 8, 45_000, 13_500),
+    ("XE7740", "RTX PRO 4500 BSE", "RTX Pro 4500 BSE", 1, 8, 45_000,  3_800),
+    ("XE7740", "H200 NVL",         "H200 NVL",         1, 8, 45_000, 34_500),
+    ("XE7740", "L40S",             "L40S",             1, 8, 45_000,  9_971),
+    ("XE7740", "L4",               "L4",               1, 6, 45_000,  4_200),
+    # ---- 17G mainstream -------------------------------------------------------------
+    ("R770",  "RTX PRO 6000 BSE", "RTX Pro 6000 BSE", 1, 2, 25_000, 13_500),
+    ("R770",  "RTX PRO 4500 BSE", "RTX Pro 4500 BSE", 1, 2, 25_000,  3_800),
+    ("R770",  "H200 NVL",         "H200 NVL",         1, 2, 25_000, 34_500),
+    ("R770",  "L40S",             "L40S",             1, 2, 25_000,  9_971),
+    ("R770",  "L4",               "L4",               1, 6, 25_000,  4_200),
+    ("R770",  "A16",              "A16",              1, 2, 25_000,  8_000),
+    ("R7725", "RTX PRO 6000 BSE", "RTX Pro 6000 BSE", 1, 2, 19_000, 13_500),
+    ("R7725", "RTX PRO 4500 BSE", "RTX Pro 4500 BSE", 1, 3, 19_000,  3_800),
+    ("R7725", "H200 NVL",         "H200 NVL",         1, 2, 19_000, 34_500),
+    ("R7725", "L40S",             "L40S",             1, 2, 19_000,  9_971),
+    ("R7725", "L4",               "L4",               1, 6, 19_000,  4_200),
+    ("R7725", "A16",              "A16",              1, 2, 19_000,  8_000),
+    ("R7715", "RTX PRO 6000 BSE", "RTX Pro 6000 BSE", 1, 3, 27_500, 13_500),
+    ("R7715", "RTX PRO 4500 BSE", "RTX Pro 4500 BSE", 1, 3, 27_500,  3_800),
+    ("R7715", "H200 NVL",         "H200 NVL",         1, 3, 27_500, 34_500),
+    ("R7715", "L40S",             "L40S",             1, 3, 27_500,  9_971),
+    ("R7715", "L4",               "L4",               1, 6, 27_500,  4_200),
+    ("R7715", "A16",              "A16",              1, 3, 27_500,  8_000),
+    ("R570",  "RTX PRO 4500 BSE", "RTX Pro 4500 BSE", 1, 3, 11_600,  3_800),
+    ("R570",  "L40S",             "L40S",             1, 3, 11_600,  9_971),
+    ("R570",  "L4",               "L4",               1, 4, 11_600,  4_200),
+    ("R470",  "L4",               "L4",               1, 4, 12_000,  4_200),
+    # ---- 17G 1U density -------------------------------------------------------------
+    ("R670",  "L4", "L4", 1, 3, 16_000, 4_200),
+    ("R6725", "L4", "L4", 1, 3, 19_400, 4_200),
+    ("R6715", "L4", "L4", 1, 3, 14_000, 4_200),
+
+    # ---- 16G 8-GPU HGX --------------------------------------------------------------
+    ("XE9685L", "B200 PC",   "B200 PC (x8)",       8, 8, 125_000, 47_500),   # ⚠ outlier vs XE9680L $570K
+    ("XE9685L", "H200 SXM5", "H200 SXM (x8) DLC",  8, 8, 125_000, 46_000),
+    ("XE9680L", "B200 PC",   "B200 PC (x8)",       8, 8, 570_000, 47_500),   # ⚠ outlier — kept per data owner
+    ("XE9680L", "H200 SXM5", "H200 SXM (x8) DLC",  8, 8, 570_000, 46_000),
+    ("XE9680",  "H200 SXM5", "H200 SXM5 (x8) AC",  8, 8,  65_000, 46_000),
+    # ---- 16G mainstream -------------------------------------------------------------
+    ("R760XA",  "L40S", "L40S", 2, 4, 40_000, 9_971),
+    ("R760XA",  "L4",   "L4",   2, 8, 40_000, 4_200),
+    ("R760XA",  "A16",  "A16",  2, 4, 40_000, 8_000),
+    ("R760",    "L40S", "L40S", 1, 2, 16_100, 9_971),
+    ("R760",    "L4",   "L4",   1, 4, 16_100, 4_200),
+    ("R760",    "A16",  "A16",  1, 2, 16_100, 8_000),
+    ("R760xd2", "L4",   "L4",   1, 2, 12_000, 4_200),
+    ("R7625",   "L40S", "L40S", 1, 2, 16_000, 9_971),
+    ("R7625",   "L4",   "L4",   1, 4, 16_000, 4_200),
+    ("R7625",   "A16",  "A16",  1, 2, 16_000, 8_000),
+    ("R7615",   "L40S", "L40S", 1, 3, 13_000, 9_971),
+    ("R7615",   "L4",   "L4",   1, 4, 13_000, 4_200),
+    ("R7615",   "A16",  "A16",  1, 3, 13_000, 8_000),
+    ("R960",    "L40S", "L40S", 1, 4, 38_000, 9_971),
+    ("R960",    "A16",  "A16",  1, 4, 38_000, 8_000),
+    # ---- 16G 1U density -------------------------------------------------------------
+    ("R660",  "L4", "L4", 1, 2, 12_000, 4_200),
+    ("R6615", "L4", "L4", 1, 3, 13_000, 4_200),
+    ("R6625", "L4", "L4", 1, 3, 18_200, 4_200),
+    # ---- 16G edge / tower -----------------------------------------------------------
+    ("T560",    "L4",   "L4",   1, 5, 13_000, 4_200),
+    ("XR7620",  "L40S", "L40S", 1, 2, 30_000, 9_971),
+    ("XR7620",  "L4",   "L4",   1, 5, 30_000, 4_200),
+    ("XR5610",  "L4",   "L4",   1, 2, 22_900, 4_200),
+    ("XR8620t", "L4",   "L4",   1, 3, 17_000, 4_200),
+]
+
+# Platforms whose Platform Price is the INTEGRATED solution estimate (shape 3): the accelerators
+# are already in the price, so gpu_price is recorded as a reference and never added.
+_RACK_SCALE_PLATFORMS = {"XE8712", "XE9712"}
+
+# GPU → (gpu_link class, nvlink?, sxm?, link_label). Verified 2026-07-16:
+#   * the entire RTX PRO line has NO NVLink — multi-GPU is PCIe Gen5 only
+#   * L40S / L4 / A16 have no NVLink either
+#   * H200 NVL is the ONLY bridged part here — it makes `nvlink-bridge` live for the first time
+_GPU_LINK: dict[str, tuple[str, bool, bool, str]] = {
+    "RTX PRO 6000 BSE": ("pcie",          False, False, "PCIe Gen5"),
+    "RTX PRO 4500 BSE": ("pcie",          False, False, "PCIe Gen5"),
+    "L40S":             ("pcie",          False, False, "PCIe Gen4"),
+    "L4":               ("pcie",          False, False, "PCIe Gen4"),
+    "A16":              ("pcie",          False, False, "PCIe Gen4"),
+    "H200 NVL":         ("nvlink-bridge", True,  False, "NVLink bridge (2–4 way)"),
+    "H200 SXM5":        ("nvlink4",       True,  True,  "NVLink-4 (SXM5)"),
+    "H100 SXM5":        ("nvlink4",       True,  True,  "NVLink-4 (SXM5)"),
+    "B200 AC":          ("nvlink5",       True,  True,  "NVLink-5 (SXM)"),
+    "B200 PC":          ("nvlink5",       True,  True,  "NVLink-5 (SXM)"),
+    "B300 AC":          ("nvlink5",       True,  True,  "NVLink-5 (SXM)"),
+    "B300 PC":          ("nvlink5",       True,  True,  "NVLink-5 (NVL8)"),
+    "B200":             ("nvlink5",       True,  True,  "NVLink-5 (SXM)"),
+    "B300":             ("nvlink5",       True,  True,  "NVLink-5 (SXM)"),
+    "GB200 NVL4":       ("nvlink-switch", True,  True,  "NVLink (fixed NVL4)"),
+    "GB200":            ("nvlink-switch", True,  True,  "NVLink Switch (rack)"),
+    "GB300":            ("nvlink-switch", True,  True,  "NVLink Switch (rack)"),
+}
+
+# Chart colors are assigned by ARCHITECTURE FAMILY, not per system: at ~75 systems a per-system
+# hue is meaningless, and a categorical palette must never exceed ~8 hues or be cycled. These six
+# are the validated default categorical palette's first six slots, in fixed order (validated
+# light-surface: worst adjacent CVD ΔE 9.1, normal-vision ΔE 19.6 — all checks pass). Three sit
+# below 3:1 contrast, which obliges "relief": the charts carry direct labels + a table view.
+_ARCH_FAMILY: dict[str, str] = {
+    "RTX PRO 6000 BSE": "Blackwell", "RTX PRO 4500 BSE": "Blackwell",
+    "B200": "Blackwell", "B300": "Blackwell",
+    "B200 AC": "Blackwell", "B200 PC": "Blackwell",
+    "B300 AC": "Blackwell", "B300 PC": "Blackwell",
+    "GB200 NVL4": "Grace-Blackwell",
+    "GB200": "Grace-Blackwell", "GB300": "Grace-Blackwell",
+    "H100 SXM5": "Hopper", "H100 PCIe": "Hopper", "H100 NVL": "Hopper",
+    "H200 SXM5": "Hopper", "H200 NVL": "Hopper",
+    "L40S": "Ada Lovelace", "L4": "Ada Lovelace",
+    "A16": "Ampere",
+    "Vera Rubin / VR200": "Rubin",
+}
+ARCH_COLORS: dict[str, str] = {
+    "Grace-Blackwell": "#2a78d6",   # slot 1 blue   — the GB10 family
+    "Blackwell":       "#008300",   # slot 2 green
+    "Hopper":          "#e87ba4",   # slot 3 magenta
+    "Ada Lovelace":    "#eda100",   # slot 4 yellow
+    "Ampere":          "#1baf7a",   # slot 5 aqua
+    "Rubin":           "#eb6834",   # slot 6 orange
+}
+_FALLBACK_COLOR = "#898781"  # muted ink — an unmapped family is visibly neutral, never a new hue
+
+
+def _build_catalog() -> None:
+    """Expand PLATFORMS × _CATALOG_ROWS into DELL_SYSTEMS entries.
+
+    Everything derivable is derived — `system_price`, `system_tdp_w` and `gpu_tdp_w` come from
+    the row + GPU_SPECS rather than being hand-carried, because hand-synced duplicates of those
+    had already drifted in the previous literal catalog.
+    """
+    for platform, gpu_spec, gpu_label, min_g, max_g, plat_price, gpu_price in _CATALOG_ROWS:
+        p    = PLATFORMS[platform]
+        spec = GPU_SPECS[gpu_spec]
+        link, nvlink, sxm, link_label = _GPU_LINK[gpu_spec]
+        family   = _ARCH_FAMILY.get(gpu_spec, "")
+        rack     = platform in _RACK_SCALE_PLATFORMS
+        gpu_tdp  = spec.get("gpu_tdp_w", 0)
+        key      = f"Dell PowerEdge {platform} ({gpu_label})"
+
+        entry: dict = {
+            "category":      p["cat"],
+            "generation":    p["gen"],
+            "platform":      platform,      # chassis alone — chart labels use this, never string-parsing
+            "gpu_label":     gpu_label,     # the matrix's own GPU text — makes each row uniquely labelable
+            "gpus_per_node": max_g,
+            "gpu_spec":      gpu_spec,
+            "gpu_model":     f"{gpu_label} · {spec['mem_gb']} GB {spec['mem_type']}",
+            "rack_u":        p["u"],
+            "nw_gbps":       p["nw"],
+            "nvlink":        nvlink,
+            "sxm":           sxm,
+            "gpu_link":      link,
+            "link_label":    link_label,
+            "net":           p["net"],
+            "arch_family":   family,
+            "color":         ARCH_COLORS.get(family, _FALLBACK_COLOR),
+            "gpu_price_ref": gpu_price,   # always recorded; only ADDED for non-rack-scale shapes
+            "best_for":      [],
+        }
+
+        if rack:
+            # Shape 3 — GPU-inclusive. Flat price; gpu_price is NEVER added (node_price() returns
+            # system_price unchanged for a non-flexible entry, same as Dell GB10).
+            entry.update({
+                "system_price": plat_price,
+                "system_tdp_w": p["tdp"],
+                "rack_unit":    True,
+                "notes":        f"{p['desc']} · integrated solution price (GPUs included; the per-GPU figure "
+                                f"is a modeling reference only) · {max_g}× {gpu_label}",
+            })
+        else:
+            # Shapes 1 & 2 — base + GPUs. A fixed x8 box is just min_gpus == max_gpus == 8.
+            entry.update({
+                "flexible_gpus": True,
+                "min_gpus":      min_g,
+                "max_gpus":      max_g,
+                "chassis_price": plat_price,
+                "gpu_price":     gpu_price,
+                "chassis_tdp_w": p["tdp"],
+                "gpu_tdp_w":     gpu_tdp,
+                # Derived, not authored — full-config reference used by the UI price table.
+                "system_price":  plat_price + max_g * gpu_price,
+                "system_tdp_w":  p["tdp"] + max_g * gpu_tdp,
+                "notes":         f"{p['desc']} · {min_g}–{max_g}× {gpu_label} · {spec['mem_gb']} GB "
+                                 f"{spec['mem_type']} @ {spec['mem_bw_gbs']:,} GB/s/GPU · {link_label} · "
+                                 f"platform ${plat_price:,} + ${gpu_price:,}/GPU",
+            })
+
+        DELL_SYSTEMS[key] = entry
+
+
+def _validate_catalog() -> None:
+    """Fail LOUDLY at import on a malformed entry.
+
+    Without this a typo'd `gpu_spec` silently skips derivation, `calculate_tco` then raises
+    KeyError on the missing `vram_gb`, and `best_fit_systems` swallows it — the system just
+    vanishes from the UI with no diagnostic. At ~75 hand-entered rows that is the single most
+    likely failure, so make it impossible to ship.
+    """
+    required = ("category", "gpus_per_node", "nvlink", "color", "system_price",
+                "system_tdp_w", "gpu_model", "notes")
+    for name, sys in DELL_SYSTEMS.items():
+        for k in required:
+            if k not in sys:
+                raise ValueError(f"DELL_SYSTEMS[{name!r}] missing required key {k!r}")
+        gs = sys.get("gpu_spec")
+        if gs is not None and gs not in GPU_SPECS:
+            raise ValueError(f"DELL_SYSTEMS[{name!r}] gpu_spec {gs!r} not in GPU_SPECS")
+        if sys.get("flexible_gpus"):
+            for k in ("chassis_price", "gpu_price", "chassis_tdp_w", "min_gpus", "max_gpus"):
+                if k not in sys:
+                    raise ValueError(f"DELL_SYSTEMS[{name!r}] flexible but missing {k!r}")
+            if sys["min_gpus"] > sys["max_gpus"]:
+                raise ValueError(f"DELL_SYSTEMS[{name!r}] min_gpus > max_gpus")
+            # A GPU drawing 0 W is always a data error, never a real spec. This silently shipped
+            # once: gpu_tdp_w is read via GPU_SPECS.get(...,0), so every SXM/HGX/NVL row reported
+            # chassis-only power (an 8×B200 node at 4,800 W instead of ~12,800 W) and understated
+            # OpEx across the board. Assert rather than default.
+            if not sys.get("gpu_tdp_w"):
+                raise ValueError(
+                    f"DELL_SYSTEMS[{name!r}] gpu_tdp_w is 0/missing — GPU_SPECS[{gs!r}] needs a "
+                    f"'gpu_tdp_w'. Power drives OpEx; a 0 W GPU silently understates it.")
+        if sys.get("gpu_link") and sys["gpu_link"] not in _LINK_PENALTY:
+            raise ValueError(f"DELL_SYSTEMS[{name!r}] unknown gpu_link {sys['gpu_link']!r}")
+
+
+# The default TCO shortlist: one row per platform, each showcasing a DIFFERENT GPU, forming a
+# ladder from the demo box up. Everything else is reachable from the scope selector in the UI.
+DEFAULT_SYSTEMS: list[str] = [
+    # --- the demo box + the mainstream ladder ---------------------------------------
+    "Dell GB10",                                    # the demo box + the tok/s baseline
+    "Dell PowerEdge R7715 (RTX Pro 6000 BSE)",      # flagship Blackwell PCIe
+    "Dell PowerEdge R7725 (H200 NVL)",              # NVLink-bridge (2–4 way islands)
+    "Dell PowerEdge R770 (L40S)",                   # Ada inference
+    "Dell PowerEdge R760 (L4)",                     # 16G entry point
+    # --- flexible PCIe box, both RTX Pro options ------------------------------------
+    "Dell PowerEdge XE7740 (RTX Pro 6000 BSE)",
+    "Dell PowerEdge XE7740 (RTX Pro 4500 BSE)",
+    # --- 8-way HGX scale-up ---------------------------------------------------------
+    "Dell PowerEdge XE9680 (H200 SXM5 (x8) AC)",    # H200 in SXM form (vs the NVL card above)
+    "Dell PowerEdge XE9780 (B200 AC (x8))",
+    "Dell PowerEdge XE9780 (B300 AC (x8))",
+    # --- rack-scale (GPU-inclusive pricing) -----------------------------------------
+    "Dell PowerEdge XE8712 (GB200 NVL4)",
+    "Dell PowerEdge XE9712 (GB300 NVL72)",
+]
+
+# Build now, BEFORE _derive_system_specs() runs below — derivation must see the generated rows.
+# _validate_catalog() is called after _LINK_PENALTY is defined (it checks gpu_link against it).
+_build_catalog()
 
 # ---------------------------------------------------------------------------
 # Derive per-node specs from the GPU_SPECS reference
@@ -393,7 +726,7 @@ DELL_SYSTEMS: dict[str, dict] = {
 # and TFLOPS (node-wide dense + sparse) computed as per-GPU value × gpus_per_node.
 # This keeps DELL_SYSTEMS and GPU_SPECS in lockstep — and is what corrects the
 # H100 NVL / 94GB memory (HBM3 @ 3.9 TB/s, not HBM2 @ 2.0). Systems without a
-# `gpu_spec` (e.g. GB10) keep their explicit values. The flat `tflops_fp16/8/4`
+# `gpu_spec` (e.g. Dell GB10) keep their explicit values. The flat `tflops_fp16/8/4`
 # keys are preserved (set to the node-wide DENSE figure) for backward compat.
 
 def aggregate_tflops(gpu_spec_name: str, gpus: int) -> dict[str, dict]:
@@ -445,6 +778,9 @@ _LINK_PENALTY: dict[str, tuple[float, float]] = {
     "pcie":          (0.16, 0.42),   # pure PCIe Gen5 spanning — worst
     "none":          (0.00, 1.00),   # single GPU, no spanning
 }
+
+# Validate the catalog now that _LINK_PENALTY exists (it checks gpu_link against these keys).
+_validate_catalog()
 # Inter-node penalty per extra node a copy spans. It scales with how much
 # node-to-node NIC bandwidth the platform has: one ConnectX-7 (400G) is the
 # baseline unit; more cards (e.g. 8× on the XE9680, 1× on the XE9640) shrink the
@@ -477,7 +813,7 @@ def interconnect_efficiency(sys: dict, gpus_per_model: int, nodes_per_copy: int)
     return intra_eff, inter_eff, round(intra_eff * inter_eff, 4)
 
 # ---------------------------------------------------------------------------
-# Extended Model Catalog (includes models too large for GB10)
+# Extended Model Catalog (includes models too large for Dell GB10)
 # ---------------------------------------------------------------------------
 
 MODEL_CATALOG: dict[str, dict] = {
@@ -485,34 +821,83 @@ MODEL_CATALOG: dict[str, dict] = {
     "TinyLlama-1.1B":           {"params_b":    1.1, "category": "LLM",  "type": "decoder"},
     "Llama-3.2-1B":             {"params_b":    1.0, "category": "LLM",  "type": "decoder"},
     "Llama-3.2-3B":             {"params_b":    3.2, "category": "LLM",  "type": "decoder"},
+    "Gemma-2-9B":               {"params_b":    9.0, "category": "LLM",  "type": "decoder"},
     # Medium
     "Mistral-7B":               {"params_b":    7.0, "category": "LLM",  "type": "decoder"},
     "Qwen2.5-7B":               {"params_b":    7.0, "category": "LLM",  "type": "decoder"},
     "Llama-3.1-8B":             {"params_b":    8.0, "category": "LLM",  "type": "decoder"},
+    "Qwen3-8B":                 {"params_b":    8.0, "category": "LLM",  "type": "decoder"},
     "nvidia/Qwen3-8B-NVFP4":    {"params_b":    8.0, "category": "LLM",  "type": "decoder"},
     # Large
     "Phi-4 (14B)":              {"params_b":   14.0, "category": "LLM",  "type": "decoder"},
     "Qwen2.5-14B":              {"params_b":   14.0, "category": "LLM",  "type": "decoder"},
-    "Mixtral-8x7B":             {"params_b":   46.7, "category": "LLM",  "type": "moe"},
+    "Qwen3-14B":                {"params_b":   14.0, "category": "LLM",  "type": "decoder"},
+    "Mistral-Small-24B":        {"params_b":   24.0, "category": "LLM",  "type": "decoder"},
+    "Gemma-2-27B":              {"params_b":   27.0, "category": "LLM",  "type": "decoder"},
+    "Gemma-3-27B":              {"params_b":   27.0, "category": "LLM",  "type": "decoder"},
     "Qwen2.5-32B":              {"params_b":   32.0, "category": "LLM",  "type": "decoder"},
+    "Qwen3-32B":                {"params_b":   32.0, "category": "LLM",  "type": "decoder"},
+    "Mixtral-8x7B":             {"params_b":   46.7, "category": "LLM",  "type": "moe", "active_b": 12.9},
     # Extra-large (need multi-GPU or large HW)
     "Llama-3.3-70B":            {"params_b":   70.0, "category": "LLM",  "type": "decoder"},
     "Qwen2.5-72B":              {"params_b":   72.0, "category": "LLM",  "type": "decoder"},
+    "Command-R+ (104B)":        {"params_b":  104.0, "category": "LLM",  "type": "decoder"},
+    "Nemotron-3-Super-120B":    {"params_b":  120.0, "category": "LLM",  "type": "moe", "active_b": 12.0},
+    "Mistral-Large-123B":       {"params_b":  123.0, "category": "LLM",  "type": "decoder"},
+    "Mixtral-8x22B":            {"params_b":  141.0, "category": "LLM",  "type": "moe", "active_b": 39.0},
+    "Qwen3-235B-A22B":          {"params_b":  235.0, "category": "LLM",  "type": "moe", "active_b": 22.0},
     # Hyperscale (multi-node only)
+    "Nemotron-4-340B":          {"params_b":  340.0, "category": "LLM",  "type": "decoder"},
     "Llama-3.1-405B":           {"params_b":  405.0, "category": "LLM",  "type": "decoder"},
     "Llama-3.1-405B (FP8)":     {"params_b":  405.0, "category": "LLM",  "type": "decoder"},
+    "DeepSeek-V3 (671B)":       {"params_b":  671.0, "category": "LLM",  "type": "moe",
+                                 "active_b": 37.0, "precisions": ["FP8", "FP4"], "native": "FP8"},
+    "DeepSeek-R1 (671B)":       {"params_b":  671.0, "category": "LLM",  "type": "moe",
+                                 "active_b": 37.0, "precisions": ["FP8", "FP4"], "native": "FP8"},
     # VLM / CNN
     "CLIP ViT-L/14":            {"params_b":    0.4, "category": "VLM",  "type": "encoder"},
     "ResNet-50":                {"params_b":    0.03,"category": "CNN",  "type": "encoder"},
     "EfficientNet-B4":          {"params_b":    0.02,"category": "CNN",  "type": "encoder"},
 }
 
+# Precisions a model can actually be served at. Explicit per-entry `precisions` win;
+# otherwise inferred from the shipped checkpoint form (pre-quantized NVFP4 / FP8-native)
+# and category. This is the single source of truth for the precision selectors.
+_STD_LLM_PREC = ["BF16", "FP16", "FP8", "INT8", "FP4", "FP32"]
+_VISION_PREC  = ["FP16", "BF16", "INT8"]
+
+
+def supported_precisions(model_name: str) -> list[str]:
+    """Precisions this catalog model actually runs at (drives the TCO precision picker)."""
+    info = MODEL_CATALOG.get(model_name, {})
+    if info.get("precisions"):
+        return list(info["precisions"])
+    name = (model_name or "").upper()
+    if "NVFP4" in name or "NVF4" in name:
+        return ["NVFP4", "FP4"]          # pre-quantized 4-bit — only loads at FP4/NVFP4
+    if "FP8" in name:
+        return ["FP8", "FP4"]            # FP8-native checkpoint
+    if info.get("category") in ("VLM", "CNN"):
+        return list(_VISION_PREC)
+    return list(_STD_LLM_PREC)
+
+
+def native_precision(model_name: str) -> str:
+    """The precision the model ships / is designed for (the default selection)."""
+    info = MODEL_CATALOG.get(model_name, {})
+    if info.get("native"):
+        return info["native"]
+    # else the shipped/designed form = the first supported precision
+    # (_STD_LLM_PREC→BF16, _VISION_PREC→FP16, NVFP4 list→NVFP4).
+    sup = supported_precisions(model_name)
+    return sup[0] if sup else "FP16"
+
 _BYTES_PER_PARAM = {
     "FP64": 8.0, "FP32": 4.0, "TF32": 4.0, "FP16": 2.0, "BF16": 2.0,  # TF32 stores as FP32 (4B)
     "INT8": 1.0, "FP8": 1.0, "FP4": 0.5, "NVFP4": 0.5,
 }
 
-GB10_BW_GBS = 273  # GB10 real LPDDR5X unified-memory bandwidth (NOT the 900 GB/s
+GB10_BW_GBS = 273  # Dell GB10 real LPDDR5X unified-memory bandwidth (NOT the 900 GB/s
                    # NVLink-C2C link, and not "4 TB/s"). This is the decode-relevant
                    # ceiling and the baseline all systems scale against.
 
@@ -537,7 +922,7 @@ MC_BW_EFF = 0.80
 # Memory-bandwidth contention when several whole model copies share ONE physical
 # GPU. k co-resident copies each re-read their own weights from the same HBM/LPDDR,
 # so they cannot each enjoy the full per-GPU bandwidth — without this, a big-VRAM /
-# low-bandwidth part (e.g. GB10's 128 GB @ 273 GB/s) gets "free" aggregate just by
+# low-bandwidth part (e.g. Dell GB10's 128 GB @ 273 GB/s) gets "free" aggregate just by
 # packing more copies in, which physics doesn't allow. We model aggregate per-GPU
 # throughput as scaling ∝ k**_COPY_BW_SHARE_EXP, so PER-COPY speed scales
 # ∝ k**(_COPY_BW_SHARE_EXP - 1):
@@ -551,7 +936,7 @@ _COPY_BW_SHARE_EXP = 0.5
 # Fleet-coordination overhead: a deployment of N nodes is NOT N× a single node. It
 # needs more networking (switches, cabling, spine), orchestration, monitoring,
 # spares/redundancy, and floor/power distribution — and a stack of independent
-# boxes gets no cross-node batching. So a 200-desktop GB10 fleet shouldn't cost-model
+# boxes gets no cross-node batching. So a 200-desktop Dell GB10 fleet shouldn't cost-model
 # like one unit ×200. We add a CapEx overhead that grows with node count, on TOP of
 # the flat add_infra_pct. Logarithmic: mild at datacenter scale (a handful of nodes),
 # real for sprawl (hundreds), capped so it never runs away. Applies to every system
@@ -614,6 +999,108 @@ class TCOResult:
     perf_score:         float = 0.0     # 0..1 blend of throughput + cost efficiency
     rating:             str = ""        # "Best" | "Better" | "Good" | "Viable" | "Not Viable"
     rating_reason:      str = ""
+
+
+# ---------------------------------------------------------------------------
+# Workforce demand model — total employees → effective concurrent sessions
+# ---------------------------------------------------------------------------
+# TCO sizing is no longer a flat "concurrent users" count. An enterprise seat
+# is split into three usage tiers, and load is driven by PER-TIER concurrency
+# (how often each tier has a live session), not headcount alone — so a
+# power-heavy workforce sizes above a flat baseline. A handful of power users
+# also dominate token consumption; the INTENSITY weights (relative tokens per
+# active session) express that for the token-share view.
+#
+# effective_sessions = Σ round(employees · headcount%_tier · concurrency%_tier)
+# token_share_tier   ∝ active_sessions_tier · INTENSITY_tier   (normalized)
+#
+# Defaults: Power ~8% of seats but ~70% active and 4× the tokens/session →
+# ~55–60% of all tokens from a thin sliver of the workforce. General is the
+# 20% baseline; Minimal is rarely active and light.
+
+WORKFORCE_TIER_ORDER = ("power", "general", "minimal")
+
+WORKFORCE_DEFAULTS = {
+    # headcount % of employees (general is derived = 100 − power − minimal)
+    "power_pct":     8.0,
+    "minimal_pct":  30.0,
+    # per-tier concurrency: fraction of that tier with a live session at peak
+    "conc_power":   70.0,
+    "conc_general": 20.0,   # the baseline concurrency
+    "conc_minimal":  5.0,
+}
+
+# Relative tokens per active session (general = 1.0). Shapes the token-share
+# bar only; sizing is session-count based (per-tier concurrency).
+WORKFORCE_INTENSITY = {"power": 4.0, "general": 1.0, "minimal": 0.4}
+
+
+@dataclass
+class WorkforceDemand:
+    total_employees:       int
+    headcount:             dict          # tier -> employees (int)
+    headcount_pct:         dict          # tier -> % of workforce
+    active_sessions:       dict          # tier -> concurrent sessions (int)
+    token_share:           dict          # tier -> % of tokens (sums ~100)
+    effective_sessions:    int           # Σ active_sessions, ≥ 1 (feeds num_users)
+    effective_concurrency: float         # effective_sessions / employees (fraction)
+    general_pct:           float         # derived headcount % for the general tier
+    warning:               str = ""      # non-empty if the mix was clamped
+
+
+def workforce_demand(
+    total_employees: int,
+    power_pct:     float = WORKFORCE_DEFAULTS["power_pct"],
+    minimal_pct:   float = WORKFORCE_DEFAULTS["minimal_pct"],
+    conc_power:    float = WORKFORCE_DEFAULTS["conc_power"],
+    conc_general:  float = WORKFORCE_DEFAULTS["conc_general"],
+    conc_minimal:  float = WORKFORCE_DEFAULTS["conc_minimal"],
+    intensity:     Optional[dict] = None,
+) -> WorkforceDemand:
+    """Convert a total-employee count + usage-tier mix into an effective
+    concurrent-session count for TCO sizing, plus a per-tier token-share split.
+
+    All *_pct args are percentages (0–100). General headcount is the remainder
+    (100 − power − minimal); if power + minimal exceed 100 it is clamped to 0
+    and a warning is returned rather than raising.
+    """
+    N   = max(int(total_employees), 1)
+    wt  = intensity or WORKFORCE_INTENSITY
+
+    warning = ""
+    gen_pct = 100.0 - power_pct - minimal_pct
+    if gen_pct < 0:
+        warning = (f"Power ({power_pct:.0f}%) + Minimal ({minimal_pct:.0f}%) exceed 100% — "
+                   f"General clamped to 0%.")
+        gen_pct = 0.0
+
+    pct = {"power": power_pct, "general": gen_pct, "minimal": minimal_pct}
+    conc = {"power": conc_power, "general": conc_general, "minimal": conc_minimal}
+
+    headcount       = {t: int(round(N * pct[t] / 100.0)) for t in WORKFORCE_TIER_ORDER}
+    active_sessions = {t: int(round(N * pct[t] / 100.0 * conc[t] / 100.0))
+                       for t in WORKFORCE_TIER_ORDER}
+
+    eff = max(1, sum(active_sessions.values()))
+
+    weighted = {t: active_sessions[t] * wt.get(t, 1.0) for t in WORKFORCE_TIER_ORDER}
+    wtot     = sum(weighted.values())
+    if wtot > 0:
+        token_share = {t: weighted[t] / wtot * 100.0 for t in WORKFORCE_TIER_ORDER}
+    else:
+        token_share = {t: 0.0 for t in WORKFORCE_TIER_ORDER}
+
+    return WorkforceDemand(
+        total_employees=N,
+        headcount=headcount,
+        headcount_pct=pct,
+        active_sessions=active_sessions,
+        token_share=token_share,
+        effective_sessions=eff,
+        effective_concurrency=eff / N,
+        general_pct=gen_pct,
+        warning=warning,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -705,7 +1192,7 @@ def scale_throughput(
     gb10_bw_gbs: float = GB10_BW_GBS,
 ) -> float:
     """
-    Scale measured GB10 throughput to a target system.
+    Scale measured Dell GB10 throughput to a target system.
     LLM decode is memory-bandwidth bound → throughput scales with BW ratio.
     Multi-GPU NVLink efficiency: -8% per GPU beyond the first (floor 70%).
     """

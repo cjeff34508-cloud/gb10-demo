@@ -6,6 +6,7 @@ env/
 venvs/
 logs/
 *.log
+*.log.old
 
 # Python
 __pycache__/

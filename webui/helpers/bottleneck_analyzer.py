@@ -9,7 +9,7 @@ try:
 except Exception:
     _NVML = False
 
-# GB10 real peaks (DGX Spark)
+# Dell GB10 real peaks
 _GB10_BW_GBS = 273       # LPDDR5X unified-memory bandwidth (~273 GB/s), not NVLink-C2C / "4 TB/s"
 _GB10_TFLOPS_FP16 = 500  # ~500 TFLOPS FP16 dense (1 PFLOP is the sparse FP4 figure)
 
