@@ -154,18 +154,36 @@ class MemoryStress:
             # Detect spill before attempting load
             spills = total_vram > 0 and required_vram_mb > total_vram * 0.95
 
+            # Hard ceiling: NEVER let this benchmark allocate past 120 GB. On this
+            # unified-memory box an overrun DEADLOCKS the kernel (hangs → hard reset)
+            # instead of raising a clean CUDA OOM, so the try/except below cannot be
+            # relied on. Cap against 120 GB AND what is actually free right now (other
+            # projects/containers may hold unified memory) — stop early and report the
+            # limit instead of hitting it.
+            CONCURRENCY_CAP_GB = 120.0
+            try:
+                free_bytes, _ = torch.cuda.mem_get_info()
+                free_mb = free_bytes / 1024 / 1024
+            except Exception:
+                free_mb = total_vram if total_vram > 0 else CONCURRENCY_CAP_GB * 1024
+            safe_ceiling_mb = min(free_mb * 0.95, CONCURRENCY_CAP_GB * 1024)
+
             torch.cuda.reset_peak_memory_stats()
             torch.cuda.empty_cache()
 
             models = []
             loaded = 0
             for i in range(num_models):
+                # Preflight: would loading this copy cross the safe ceiling? Stop, don't hang.
+                if (i + 1) * model_size_gb * 1024 > safe_ceiling_mb:
+                    spills = True
+                    break
                 try:
                     model_tensor = torch.randn(elements_per_model, dtype=dtype, device="cuda")
                     models.append(model_tensor)
                     loaded += 1
                 except RuntimeError:
-                    # OOM — record partial load
+                    # OOM — record partial load (secondary net; discrete-CUDA behaviour)
                     spills = True
                     break
 
@@ -175,20 +193,25 @@ class MemoryStress:
             latencies = []
             for _ in range(3):
                 if torch.cuda.is_available():
-                    # Each session gets its own CUDA stream — true concurrent GPU execution
+                    # Each session gets its own CUDA stream — true concurrent GPU execution.
+                    # Compute IN PLACE: `model_t * 2.0 + 1.0` would allocate a second
+                    # full-size tensor per session and, held across all N streams at once,
+                    # DOUBLE peak memory vs. the projection (the crash bug). In-place keeps
+                    # the concurrent-stream workload but allocates nothing extra, so peak
+                    # ≈ the loaded weights and matches the sidebar estimate.
                     streams = [torch.cuda.Stream() for _ in range(loaded)]
-                    concurrent_results = []
                     torch.cuda.synchronize()
                     start = time.perf_counter()
                     for model_t, stream in zip(models, streams):
                         with torch.cuda.stream(stream):
-                            concurrent_results.append(model_t * 2.0 + 1.0)
+                            model_t.mul_(2.0).add_(1.0)
                     for s in streams:
                         s.synchronize()
                     latencies.append((time.perf_counter() - start) * 1000)
                 else:
                     start = time.perf_counter()
-                    concurrent_results = [m * 2.0 + 1.0 for m in models]
+                    for m in models:
+                        m.mul_(2.0).add_(1.0)
                     latencies.append((time.perf_counter() - start) * 1000)
 
             avg_latency = sum(latencies) / len(latencies)

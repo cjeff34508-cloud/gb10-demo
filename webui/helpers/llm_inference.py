@@ -101,6 +101,7 @@ class LLMInference:
         self._load_ms: float = 0.0
         self.incompatible: bool = False   # True if precision can't run on this checkpoint
         self.incompatible_reason: str = ""
+        self.load_block_reason: str = ""  # why a load was refused (memory guard), for the UI
         # The precision actually used, which may differ from the requested one
         # (e.g. FP16 → BF16 for a BF16-native model). Set in load_model().
         self._effective_precision: str = precision
@@ -113,16 +114,35 @@ class LLMInference:
             print(f"Loading {self.model_name} in {self.precision}...")
             model_path = _local_path(self.model_name)
 
-            # Memory guard: refuse to load if estimated footprint exceeds usable Dell Pro Max GB10 memory.
+            # Memory guard 1 — static budget: refuse if the estimated footprint exceeds the
+            # usable Dell Pro Max GB10 window (128 GB total − 28 GB OS/runtime reserve).
             _ok, _est_gb = fits_in_memory(self.model_name, self.precision)
             if not _ok:
-                print(
-                    f"✗ Memory guard blocked {self.model_name} @ {self.precision}: "
+                self.load_block_reason = (
                     f"~{_est_gb:.0f} GB estimated > {GB10_USABLE_GB:.0f} GB usable "
-                    f"({GB10_RESERVE_GB:.0f} GB reserved for OS/runtime). "
-                    f"Choose a lower-precision or smaller model."
+                    f"({GB10_RESERVE_GB:.0f} GB reserved) — pick a lower precision or smaller model"
                 )
+                print(f"✗ Memory guard blocked {self.model_name} @ {self.precision}: {self.load_block_reason}")
                 return False
+
+            # Memory guard 2 — live free memory: even if it fits the static budget, refuse
+            # when it won't fit what is ACTUALLY FREE right now (another model/container may be
+            # resident). On this unified box an overrun DEADLOCKS the kernel (hard reset) instead
+            # of raising a clean OOM, so we must refuse BEFORE allocating, never attempt-and-catch.
+            try:
+                if torch.cuda.is_available():
+                    _free_gb = torch.cuda.mem_get_info()[0] / (1024 ** 3)
+                    _need_gb = _est_gb * 1.10  # margin for CUDA workspace / activations
+                    if _need_gb > _free_gb:
+                        self.load_block_reason = (
+                            f"~{_est_gb:.0f} GB needed but only {_free_gb:.0f} GB free right now "
+                            f"(another GPU workload resident?) — free the GPU or choose a smaller "
+                            f"model/precision"
+                        )
+                        print(f"✗ Memory guard blocked {self.model_name} @ {self.precision}: {self.load_block_reason}")
+                        return False
+            except Exception:
+                pass  # if the query fails, fall through to the static guard's protection
 
             # Precision incompatibility (e.g. pre-quantized NVFP4 checkpoints, whose
             # packed FP4 weights only load at FP4/NVFP4). Report it as Not Compatible
@@ -192,6 +212,14 @@ class LLMInference:
                             max_memory=_max_memory,
                         )
                         print(f"✓ Pre-quantized FP4 checkpoint loaded")
+                        # Honest labeling: on this aarch64 box the HF stack decompresses
+                        # the packed NVFP4 weights to BF16 and runs BF16 tensor cores —
+                        # it is NOT real FP4 compute. Surface that instead of implying FP4.
+                        self._effective_precision = "BF16 compute"
+                        self._precision_note = (
+                            "NVFP4 packed weights decompressed to BF16 (run_compressed=false) — "
+                            "not real FP4 tensor-core math on this HF/aarch64 stack"
+                        )
                     except Exception as e:
                         print(f"✗ NVFP4 pre-quantized load failed: {e}")
                         return False
@@ -210,6 +238,13 @@ class LLMInference:
                             device_map="auto", max_memory=_max_memory,
                         )
                         print(f"✓ Using bitsandbytes {self.precision} (4-bit) quantization")
+                        # bitsandbytes fp4 STORES weights 4-bit but computes in BF16
+                        # (bnb_4bit_compute_dtype=torch.bfloat16) — memory win, not real
+                        # FP4 tensor-core throughput. Label it honestly.
+                        self._effective_precision = "BF16 compute"
+                        self._precision_note = (
+                            "bitsandbytes 4-bit storage, BF16 compute — not real FP4 tensor-core math"
+                        )
                     except Exception as e:
                         # Quantization stays available — but never silently fall back
                         # to FP32 and run; report failure instead.

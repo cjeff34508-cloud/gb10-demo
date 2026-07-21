@@ -32,6 +32,7 @@ from helpers.tco_engine import (
 from helpers.model_info import lookup_model_info, designed_precision, precision_compatible
 from helpers.on_device_ai import narrator_available, make_narrator, NARRATOR_MODEL, NARRATOR_PRECISION
 from helpers.cloud_pricing import api_token_costs
+from helpers.vllm_reference import load_vllm_reference, has_real_fp4
 
 # Display order for precisions: lowest bit-width first → highest.
 _PRECISION_ORDER = ["FP4", "NVFP4", "INT4", "FP8", "INT8", "FP16", "BF16", "TF32", "FP32", "FP64"]
@@ -459,7 +460,9 @@ elif scenario == "Multi-User Concurrency":
     selected_model = f"{num_users}-user concurrency"
     context_length = "short"
     _blocked, _allowed = [], list(precisions)
-    # Concurrency check: total = model_size_gb × num_users × bytes_per_param overhead
+    # Concurrency check: total = weights (model_size_gb × num_users) + ~12% fixed
+    # CUDA/framework overhead. The benchmark computes IN PLACE (memory_stress.py), so
+    # peak ≈ weights and matches this estimate — no per-session activation copy.
     for _p in precisions:
         _total = model_size_gb * num_users * 1.12
         if _total > GB10_USABLE_GB:
@@ -786,7 +789,7 @@ with tab_benchmark:
                                         local_summary = {"text": _txt, "model": selected_model,
                                                          "precision": precision, "tps": tps}
                         else:
-                            st.error(f"✗ {precision}: failed to load")
+                            st.error(f"✗ {precision}: {getattr(inf, 'load_block_reason', '') or 'failed to load'}")
                     except Exception as e:
                         st.error(f"Error @ {precision}: {e}")
                     finally:
@@ -806,7 +809,7 @@ with tab_benchmark:
                                 ips = m.business_output.get("images_per_sec", 0)
                                 st.success(f"✓ {precision}: {ips:.1f} img/s | {m.primary_bottleneck}")
                         else:
-                            st.error(f"✗ {precision}: failed to load")
+                            st.error(f"✗ {precision}: {getattr(inf, 'load_block_reason', '') or 'failed to load'}")
                     except Exception as e:
                         st.error(f"Error @ {precision}: {e}")
                     finally:
@@ -966,6 +969,52 @@ with tab_results:
         st.stop()
 
     st.caption(f"**Scenario:** {rdata['scenario']}   |   **Model:** {rdata['model']}")
+
+    # -----------------------------------------------------------------------
+    # REAL vLLM SERVING REFERENCE — replaces the synthetic Multi-User story.
+    # Loaded unconditionally so the production-delta card + confidence panel
+    # below can reuse it.
+    # -----------------------------------------------------------------------
+    _vref = load_vllm_reference()
+    _caps = (_vref or {}).get("captures", {}) if _vref else {}
+    _serving_caps = {k: c for k, c in _caps.items() if c.get("per_n")}
+
+    if rdata["scenario"] == "Multi-User Concurrency":
+        if _serving_caps:
+            _sk, _scap = next(iter(_serving_caps.items()))
+            _rows = _scap["per_n"]
+            _top = _rows[-1]
+            st.markdown("#### 🟢 Real vLLM Batched-Serving Reference")
+            st.caption(
+                f"Measured on **{_scap.get('gpu','GB10')}** via vLLM serving "
+                f"**{_scap.get('model','?')}** @ {_scap.get('precision','?')} "
+                f"({str(_scap.get('timestamp',''))[:10]}). This **replaces the old synthetic "
+                f"'N model copies' estimate** — real serving batches users through ONE model "
+                f"copy, so per-user cost ≈ KV cache, not a whole model."
+            )
+            _mc = st.columns(4)
+            _mc[0].metric("Concurrency", f"{_top['n_users']} users")
+            _mc[1].metric("Per-User tok/s", f"{_top['per_user_tps']:.0f}")
+            _mc[2].metric("Aggregate tok/s", f"{_top['aggregate_tps']:.0f}")
+            _mc[3].metric("KV-Cache Used", f"{_top['kv_cache_pct']:.0f}%")
+            st.dataframe(pd.DataFrame([
+                {"Users": r["n_users"], "Per-User tok/s": f"{r['per_user_tps']:.0f}",
+                 "Aggregate tok/s": f"{r['aggregate_tps']:.0f}", "KV %": f"{r['kv_cache_pct']:.0f}",
+                 "GPU util %": f"{r['gpu_util']:.0f}", "OK": f"{r['completed']}/{r['n_users']}"}
+                for r in _rows
+            ]), use_container_width=True, hide_index=True)
+            st.info("The memory-capacity figures further down (Max Sessions, VRAM fit) are a "
+                    "**memory-fit sanity check, not a serving measurement** — the table above is "
+                    "the real concurrency story.")
+        else:
+            st.warning(
+                "**No vLLM serving reference captured yet** — the concurrency figures below are a "
+                "*memory-capacity estimate*, not a real serving measurement (real serving batches "
+                "many users through ONE model copy). To replace them with real numbers, bring up "
+                "the vLLM container and run:\n\n"
+                "```\npython scripts/capture_vllm_reference.py --key qwen2.5-7b --precision FP8 "
+                "--hf-eager-tps <demo_tok/s>\n```"
+            )
 
     # On-device talking points — generated by the benchmarked model itself, on the Dell Pro Max GB10
     _local = rdata.get("local_summary")
@@ -1367,7 +1416,10 @@ with tab_results:
         "SXM GPUs aggregate via NVLink (no penalty). Non-SXM that cannot fit the model incur a 1.5× cost penalty. "
         "Scaling efficiency degrades ~8% per additional GPU in an NVLink aggregate. "
         "Economy of scale: 3% cost reduction per 10 nodes beyond 10 nodes. "
-        "⚠ Estimates assume ideal NVLink topology — actual results may vary ±10% depending on cluster topology, workload communication pattern, and interconnect congestion."
+        "⚠ These are **spec-ratio extrapolations, not measurements** — a memory-bandwidth proxy "
+        "can't capture compute/architecture/software-stack differences. Treat throughput and "
+        "node-count figures as a **heuristic band of roughly ±35%** for far-from-GB10 targets "
+        "(wider still with GPU count and cluster-topology effects), not point truth."
     )
 
     # GPU catalogue — prices, specs, interconnect, SXM capability
@@ -1568,7 +1620,7 @@ with tab_results:
                 "scale_gpu": "H200 SXM (best memory per dollar for large-batch) → B200 for FP4 acceleration",
                 "cost_gpu": "GB200 NVL2 at scale — 384 GB fits 72B models for maximum throughput",
                 "prec_advice": "INT8 or NVFP4 to double/quadruple batch capacity within the same VRAM budget",
-                "gb10_equiv": f"This run: {tps:.0f} tok/s · H200 est. {tps*(4800/273):.0f} tok/s (~18× Dell Pro Max GB10 mem BW)",
+                "gb10_equiv": f"This run: {tps:.0f} tok/s · H200 est. {tps*(4800/273):.0f} tok/s ±35% (~18× Dell Pro Max GB10 mem BW; spec-ratio est.)",
             }
 
         elif scenario == "Batch Limit Sweep":
@@ -1610,7 +1662,7 @@ with tab_results:
                 "scale_gpu": "B200 SXM — 8 TB/s HBM3e BW, ~29× higher sustained bandwidth than Dell Pro Max GB10",
                 "cost_gpu": "Dell Pro Max GB10 is unmatched at ~$4K; next step is RTX PRO 6000 at ~$13K with 960 GB/s GDDR7",
                 "prec_advice": "NVFP4 on any Blackwell GPU; BF16 on H200 for HBM3e bandwidth comparison",
-                "gb10_equiv": f"Dell Pro Max GB10 at {mem:.1f} GB used · BW scaling: H200 = {tps*(4800/273):.0f} vs {tps:.0f} Dell Pro Max GB10",
+                "gb10_equiv": f"Dell Pro Max GB10 at {mem:.1f} GB used · BW scaling: H200 est. {tps*(4800/273):.0f} ±35% vs {tps:.0f} Dell Pro Max GB10 (spec-ratio est.)",
             }
 
         elif scenario == "Vision Throughput":
@@ -1625,7 +1677,7 @@ with tab_results:
                 "scale_gpu": "H100 SXM5 → H200 for large-batch image pipelines (>10K img/s)",
                 "cost_gpu": "RTX PRO 6000 Blackwell — best img/s per dollar for sub-1K batch workloads",
                 "prec_advice": "FP16/BF16 for quality; INT8 for 2× throughput at batch≥32",
-                "gb10_equiv": f"Dell Pro Max GB10: {ips:.1f} img/s · H100 est. {ips*(3350/273):.0f} img/s at ~12× BW",
+                "gb10_equiv": f"Dell Pro Max GB10: {ips:.1f} img/s · H100 est. {ips*(3350/273):.0f} img/s ±35% at ~12× BW (spec-ratio est.)",
             }
 
         else:  # HPC / Quant Analysis
@@ -1683,6 +1735,110 @@ with tab_results:
 <p style="font-size:0.9em; color:#444;">{_advice['gb10_equiv']}</p>
 </div>
 """, unsafe_allow_html=True)
+
+    # -----------------------------------------------------------------------
+    # 7a. PRODUCTION DELTA — HF eager (what the demo measures) vs real vLLM
+    # -----------------------------------------------------------------------
+    _delta_caps = {k: c for k, c in _caps.items() if c.get("hf_eager_tps") and c.get("per_n")}
+    if _delta_caps:
+        _dk, _dc = next(iter(_delta_caps.items()))
+        _hf = _dc["hf_eager_tps"]
+        _vllm1 = next((r["per_user_tps"] for r in _dc["per_n"] if r["n_users"] == 1),
+                      _dc["per_n"][0]["per_user_tps"])
+        _mult = _vllm1 / _hf if _hf else 0
+        st.markdown(f"""
+<div class="biz-card">
+<h4>Production Stack Delta — HF Eager vs vLLM</h4>
+<p style="font-size:0.9em; color:#444;">Same model (<b>{_dc.get('model','?')}</b>, {_dc.get('precision','?')}):
+the demo's in-process <b>HF-eager</b> path delivers <b>{_hf:.0f} tok/s</b>/user, while a real
+<b>vLLM</b> production stack delivers <b>{_vllm1:.0f} tok/s</b>/user —
+<b>{_mult:.1f}× faster</b>. Every other tok/s figure in this demo is HF-eager, i.e. a
+conservative floor, not a ceiling.</p>
+</div>
+""", unsafe_allow_html=True)
+
+    _fp4_caps = {k: c for k, c in _caps.items() if c.get("fp4_supported") and c.get("per_n")}
+    if _fp4_caps:
+        _fk, _fc = next(iter(_fp4_caps.items()))
+        _f1 = _fc["per_n"][0]["per_user_tps"]
+        st.success(
+            f"🟢 **Real FP4 measured via vLLM NVFP4** ({_fc.get('model','?')}): "
+            f"{_f1:.0f} tok/s/user — genuine 4-bit tensor-core throughput, not the HF "
+            f"BF16-decompress path."
+        )
+
+    # -----------------------------------------------------------------------
+    # 7b. CONFIDENCE / METHODOLOGY — how much to trust each number
+    # -----------------------------------------------------------------------
+    with st.expander("📐 Confidence / Methodology — how far to trust these numbers", expanded=False):
+        _scenario_now = rdata.get("scenario", "")
+        _is_multiuser = _scenario_now == "Multi-User Concurrency"
+        _fp4_used = any(str(getattr(m, "precision", "")).upper() in ("FP4", "NVFP4")
+                        for m in all_metrics)
+        _vref = load_vllm_reference()
+        _real_fp4 = has_real_fp4()
+
+        # Multi-user serving confidence flips on whether a real vLLM reference was captured.
+        if _vref:
+            _mu = _rag("Multi-User Serving", "REAL", "green", "vLLM batched serving captured")
+        else:
+            _mu = _rag("Multi-User Serving", "SYNTHETIC", "red", "no vLLM reference — capacity est. only")
+
+        # FP4 confidence: real only if vLLM NVFP4 measured; else the honest BF16-compute relabel.
+        if _real_fp4:
+            _fp4 = _rag("FP4", "REAL", "green", "vLLM NVFP4 tensor-core measured")
+        elif _fp4_used:
+            _fp4 = _rag("FP4", "BF16 COMPUTE", "red", "HF decompresses NVFP4 → BF16")
+        else:
+            _fp4 = _rag("FP4", "N/A", "grey", "no FP4 run in this result")
+
+        _badges = "".join([
+            _rag("On-Box tok/s", "HIGH", "green", "real run · HF eager (prod stack faster)"),
+            _rag("Memory Footprint", "MED", "yellow", "params×bytes + heuristic overhead"),
+            _mu,
+            _fp4,
+            _rag("Cross-HW Proj.", "MED", "yellow", "spec-ratio ± band, not measured"),
+            _rag("TCO $", "MED", "yellow", "list-price model + heuristic knobs"),
+        ])
+        st.markdown(
+            f"<div style='display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px;'>{_badges}</div>",
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            "**What is measured vs. modeled vs. extrapolated**\n\n"
+            "- 🟢 **On-box single-model throughput/latency** — a *real* run on this Dell Pro Max "
+            "GB10, but through **HuggingFace `transformers` eager**. A production serving stack "
+            "(vLLM / TensorRT-LLM) is materially faster, so these are a **conservative floor**, "
+            "not a ceiling.\n"
+            "- 🟡 **Memory footprint** — `params × bytes/param` plus a heuristic overhead term; "
+            "good to first order, looser under load (KV-cache growth is context-driven).\n"
+            f"- {'🟢' if _vref else '🔴'} **Multi-user serving** — "
+            + ("shown from a **captured real vLLM batched-serving run** (per-user + aggregate "
+               "tok/s, KV-cache usage)."
+               if _vref else
+               "**no vLLM reference captured yet** — the on-box capacity figure is a *memory-fit "
+               "estimate*, not a serving measurement. Real serving batches many users through "
+               "**one** model copy (per-user cost ≈ KV cache, not a whole model). Run "
+               "`scripts/capture_vllm_reference.py` against the vLLM container to populate this.")
+            + "\n"
+            f"- {'🟢' if _real_fp4 else '🔴'} **FP4** — "
+            + ("a **real vLLM NVFP4 tensor-core** measurement."
+               if _real_fp4 else
+               "the HF stack on this aarch64 box **decompresses NVFP4 → BF16**, so any FP4 run here "
+               "is labeled `FP4 → BF16 compute`. It is *not* real 4-bit tensor-core throughput.")
+            + "\n"
+            "- 🟡 **Cross-hardware projections** — the measured GB10 number is scaled to other GPUs "
+            "by a **memory-bandwidth ratio**. That ignores compute/architecture/software-stack "
+            "differences, so each projection carries a **heuristic ± band** (widening with "
+            "extrapolation distance and GPU count) — a band, **not a statistical confidence "
+            "interval**.\n"
+            "- 🟡 **TCO $** — a list-price cost model with hand-tuned knobs (bandwidth contention, "
+            "fleet-coordination overhead). Best read as **relative** comparison, not absolute dollars.\n\n"
+            "**Bottom line:** trustworthy as a *directional* story and as a lower bound on this box; "
+            "**not** point-accurate for a production capacity/purchase plan. The vLLM reference above "
+            "is what closes the gap to a real deployment."
+        )
 
     # -----------------------------------------------------------------------
     # 8. CSV EXPORT — all 4 dimensions
@@ -2532,19 +2688,25 @@ with tab_tco:
         st.markdown("### Dell Pro Max GB10 Measured → Scale-Up Projection")
         st.caption(
             f"Measured Dell Pro Max GB10 throughput: **{_gb10_tps_measured:.0f} tok/s** — "
-            "projected to larger systems using memory-bandwidth ratio scaling."
+            "projected to larger systems using memory-bandwidth ratio scaling. "
+            "The **± range is a heuristic error band, not a statistical confidence interval** "
+            "— it widens with bandwidth-extrapolation distance and GPU count "
+            "(spec-ratio scaling ignores compute/architecture/software-stack differences)."
         )
-        from helpers.tco_engine import scale_throughput, gpus_needed_for_model
+        from helpers.tco_engine import (
+            scale_throughput_band, projection_uncertainty, gpus_needed_for_model,
+        )
         scale_rows = []
         # Follow the selection — this used to iterate the whole catalog, which at ~76 systems
         # ignores the scope entirely and renders every row regardless of what's being compared.
         for sname in tco_systems:
             sinfo = DELL_SYSTEMS[sname]
             _gpus_needed = gpus_needed_for_model(m_gb, sinfo["vram_gb"] / max(sinfo["gpus_per_node"], 1))
-            _proj_tps = scale_throughput(
+            _proj_tps, _proj_lo, _proj_hi = scale_throughput_band(
                 _gb10_tps_measured, sinfo["gpu_bw_gbs"],
                 _gpus_needed, GB10_BW_GBS,
             )
+            _frac = projection_uncertainty(sinfo["gpu_bw_gbs"], _gpus_needed, GB10_BW_GBS)
             scale_rows.append({
                 # Full name, not split("(")[0] — that collapsed every GPU variant of a chassis
                 # into identical rows (all 6 R770 builds became one "Dell PowerEdge R770").
@@ -2552,6 +2714,8 @@ with tab_tco:
                 "BW (GB/s)":    f"{sinfo['gpu_bw_gbs']:,}",
                 "BW vs Dell Pro Max GB10":   f"{sinfo['gpu_bw_gbs'] / GB10_BW_GBS:.1f}×",
                 "Proj. TPS":    f"{_proj_tps:,.0f}",
+                "± band":       f"±{_frac*100:.0f}%",
+                "TPS range":    f"{_proj_lo:,.0f} – {_proj_hi:,.0f}",
                 "Speedup":      f"{_proj_tps / max(_gb10_tps_measured, 1):.1f}×",
             })
         st.dataframe(pd.DataFrame(scale_rows), use_container_width=True, hide_index=True)

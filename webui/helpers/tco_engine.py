@@ -1201,6 +1201,40 @@ def scale_throughput(
     return gb10_tps * bw_ratio * nvlink_eff
 
 
+def projection_uncertainty(target_bw_gbs: float, gpus_in_target: int,
+                           gb10_bw_gbs: float = GB10_BW_GBS) -> float:
+    """
+    Heuristic uncertainty fraction for a cross-hardware throughput projection.
+
+    This is NOT a statistical confidence interval. Bandwidth-ratio scaling ignores
+    compute-throughput, architecture and software-stack differences, so the further
+    a target is from the measured Dell Pro Max GB10 baseline — in bandwidth and in GPU
+    count — the wider the honest error band. Components:
+      - base 15 %: a memory-BW proxy can't capture compute/arch/software deltas
+      - + 5 % per octave of BW extrapolation distance from GB10's 273 GB/s
+      - + 5 % per GPU beyond the first (interconnect/parallel-scaling unknowns)
+      - capped at 50 %.
+    Returns the ± fraction; callers form the band as point × (1 ∓ frac).
+    """
+    bw_ratio = target_bw_gbs / max(gb10_bw_gbs, 1)
+    frac  = 0.15
+    frac += 0.05 * abs(math.log2(max(bw_ratio, 1e-3)))
+    frac += 0.05 * max(0, gpus_in_target - 1)
+    return min(frac, 0.50)
+
+
+def scale_throughput_band(
+    gb10_tps: float,
+    target_bw_gbs: float,
+    gpus_in_target: int,
+    gb10_bw_gbs: float = GB10_BW_GBS,
+) -> tuple[float, float, float]:
+    """(point, low, high) projection — point estimate plus its heuristic ± band."""
+    point = scale_throughput(gb10_tps, target_bw_gbs, gpus_in_target, gb10_bw_gbs)
+    frac  = projection_uncertainty(target_bw_gbs, gpus_in_target, gb10_bw_gbs)
+    return point, point * (1.0 - frac), point * (1.0 + frac)
+
+
 def calculate_tco(
     system_name:    str,
     model_name:     str,
