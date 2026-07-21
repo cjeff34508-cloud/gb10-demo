@@ -1003,16 +1003,23 @@ with tab_results:
             _mc[0].metric("Concurrency", f"{_top['n_users']} users")
             _mc[1].metric("Per-User tok/s", f"{_top['per_user_tps']:.0f}")
             _mc[2].metric("Aggregate tok/s", f"{_top['aggregate_tps']:.0f}")
-            _mc[3].metric("KV-Cache Used", f"{_top['kv_cache_pct']:.0f}%")
+            _mc[3].metric("KV-Cache Used", f"{_top['kv_cache_pct']:.2f}%",
+                          help="Fraction of the KV-cache pool in use — tiny here means huge "
+                               "headroom for many more concurrent users")
             st.dataframe(pd.DataFrame([
                 {"Users": r["n_users"], "Per-User tok/s": f"{r['per_user_tps']:.0f}",
-                 "Aggregate tok/s": f"{r['aggregate_tps']:.0f}", "KV %": f"{r['kv_cache_pct']:.0f}",
-                 "GPU util %": f"{r['gpu_util']:.0f}", "OK": f"{r['completed']}/{r['n_users']}"}
+                 "Aggregate tok/s": f"{r['aggregate_tps']:.0f}", "KV %": f"{r['kv_cache_pct']:.2f}",
+                 "Peak running": r.get("running_peak", "—"),
+                 "OK": f"{r['completed']}/{r['n_users']}"}
                 for r in _rows
             ]), use_container_width=True, hide_index=True)
-            st.info("The memory-capacity figures further down (Max Sessions, VRAM fit) are a "
-                    "**memory-fit sanity check, not a serving measurement** — the table above is "
-                    "the real concurrency story.")
+            st.info(
+                f"At {_top['n_users']} users the KV cache is only **{_top['kv_cache_pct']:.2f}%** "
+                "full — the box has large headroom for **many more** concurrent users (the real "
+                "correction to the old synthetic 'N model copies' estimate). The memory-capacity "
+                "figures further down (Max Sessions, VRAM fit) are a **memory-fit sanity check, "
+                "not a serving measurement**."
+            )
         else:
             st.warning(
                 "**No vLLM serving reference captured yet** — the concurrency figures below are a "
@@ -1750,17 +1757,20 @@ with tab_results:
     if _delta_caps:
         _dk, _dc = next(iter(_delta_caps.items()))
         _hf = _dc["hf_eager_tps"]
-        _vllm1 = next((r["per_user_tps"] for r in _dc["per_n"] if r["n_users"] == 1),
-                      _dc["per_n"][0]["per_user_tps"])
-        _mult = _vllm1 / _hf if _hf else 0
+        _pn = _dc["per_n"]
+        _vllm1 = next((r["per_user_tps"] for r in _pn if r["n_users"] == 1), _pn[0]["per_user_tps"])
+        _topr = max(_pn, key=lambda r: r["n_users"])
+        _agg, _nmax = _topr["aggregate_tps"], _topr["n_users"]
+        _agg_mult = _agg / _hf if _hf else 0
         st.markdown(f"""
 <div class="biz-card">
 <h4>Production Stack Delta — HF Eager vs vLLM</h4>
-<p style="font-size:0.9em; color:#444;">Same model (<b>{_dc.get('model','?')}</b>, {_dc.get('precision','?')}):
-the demo's in-process <b>HF-eager</b> path delivers <b>{_hf:.0f} tok/s</b>/user, while a real
-<b>vLLM</b> production stack delivers <b>{_vllm1:.0f} tok/s</b>/user —
-<b>{_mult:.1f}× faster</b>. Every other tok/s figure in this demo is HF-eager, i.e. a
-conservative floor, not a ceiling.</p>
+<p style="font-size:0.9em; color:#444;">Same model (<b>{_dc.get('model','?')}</b>, {_dc.get('precision','?')}).
+<b>Per-user speed is near parity</b> — HF-eager <b>{_hf:.0f}</b> vs vLLM <b>{_vllm1:.0f}</b> tok/s/user —
+because both are <b>memory-bandwidth-bound at batch 1</b> on this 273&nbsp;GB/s box. The production win is
+<b>concurrency</b>: vLLM serves <b>{_nmax} users at {_agg:.0f} tok/s aggregate</b> from ONE model copy,
+while HF-eager serves one user at a time — <b>~{_agg_mult:.0f}× the total throughput</b>. Every other
+tok/s figure in this demo is HF-eager, i.e. a conservative floor.</p>
 </div>
 """, unsafe_allow_html=True)
 

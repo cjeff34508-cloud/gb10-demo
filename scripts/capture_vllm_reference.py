@@ -55,9 +55,10 @@ def _urls(base_url: str):
     base = base_url.rstrip("/")
     root = base[:-3].rstrip("/") if base.endswith("/v1") else base
     return {
-        "models":  base + "/models",
-        "chat":    base + "/chat/completions",
-        "metrics": root + "/metrics",
+        "models":      base + "/models",
+        "chat":        base + "/chat/completions",
+        "completions": base + "/completions",
+        "metrics":     root + "/metrics",
     }
 
 
@@ -85,17 +86,21 @@ def detect_model(urls) -> str:
 
 
 # --------------------------------------------------------------------------- load generation
-async def _one_request(session, chat_url, model, prompt, max_tokens):
-    body = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-        "temperature": 0.7,
-        "top_p": 0.8,
-        "chat_template_kwargs": {"enable_thinking": False},
-    }
+async def _one_request(session, urls, model, prompt, max_tokens, mode):
+    # "completions" uses the raw prompt endpoint — needed for checkpoints whose tokenizer
+    # ships no chat template (e.g. the repackaged NVFP4 checkpoint), which /chat/completions
+    # rejects. "chat" is the default for normal instruct models.
+    if mode == "completions":
+        url = urls["completions"]
+        body = {"model": model, "prompt": prompt, "max_tokens": max_tokens,
+                "temperature": 0.7, "top_p": 0.8}
+    else:
+        url = urls["chat"]
+        body = {"model": model, "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens, "temperature": 0.7, "top_p": 0.8,
+                "chat_template_kwargs": {"enable_thinking": False}}
     t0 = time.perf_counter()
-    async with session.post(chat_url, json=body, headers=_AUTH) as resp:
+    async with session.post(url, json=body, headers=_AUTH) as resp:
         data = await resp.json()
     dt = time.perf_counter() - t0
     if "choices" not in data:
@@ -109,7 +114,7 @@ async def _sampler(metrics_url, stop_evt, out):
     while not stop_evt.is_set():
         try:
             txt = await asyncio.to_thread(_http_get, metrics_url, 5.0)
-            kv = _parse_prom(txt, "vllm:gpu_cache_usage_perc")
+            kv = _parse_prom(txt, "vllm:kv_cache_usage_perc")
             run = _parse_prom(txt, "vllm:num_requests_running")
         except Exception:
             kv = run = None
@@ -118,19 +123,20 @@ async def _sampler(metrics_url, stop_evt, out):
             out["kv"] = max(out["kv"], kv * 100.0 if kv <= 1.0 else kv)
         if run is not None:
             out["run"] = max(out["run"], run)
-        if gs.get("gpu_util_pct") is not None:
-            out["gpu_util"] = max(out["gpu_util"], gs["gpu_util_pct"])
+        _u = gs.get("gpu_util_pct")  # pynvml util is unavailable on this GB10 → stays None
+        if _u is not None:
+            out["gpu_util"] = _u if out["gpu_util"] is None else max(out["gpu_util"], _u)
         await asyncio.sleep(0.25)
 
 
-async def run_level(session, urls, model, prompt, max_tokens, n_users):
-    peak = {"kv": 0.0, "run": 0.0, "gpu_util": 0.0}
+async def run_level(session, urls, model, prompt, max_tokens, n_users, mode):
+    peak = {"kv": 0.0, "run": 0.0, "gpu_util": None}
     stop_evt = asyncio.Event()
     sampler = asyncio.create_task(_sampler(urls["metrics"], stop_evt, peak))
 
     t_start = time.perf_counter()
     results = await asyncio.gather(
-        *[_one_request(session, urls["chat"], model, prompt, max_tokens) for _ in range(n_users)],
+        *[_one_request(session, urls, model, prompt, max_tokens, mode) for _ in range(n_users)],
         return_exceptions=True,
     )
     wall = time.perf_counter() - t_start
@@ -148,8 +154,8 @@ async def run_level(session, urls, model, prompt, max_tokens, n_users):
         "n_users": n_users,
         "per_user_tps": round(sum(per_user_tps_vals) / len(per_user_tps_vals), 1),
         "aggregate_tps": round(total_toks / wall, 1) if wall > 0 else 0.0,
-        "kv_cache_pct": round(peak["kv"], 1),
-        "gpu_util": round(peak["gpu_util"], 1),
+        "kv_cache_pct": round(peak["kv"], 2),
+        "gpu_util": round(peak["gpu_util"], 1) if peak["gpu_util"] is not None else None,
         "running_peak": int(peak["run"]),
         "completed": len(ok),
         "failed": len(errors),
@@ -169,10 +175,12 @@ async def capture(args, urls, model):
     async with aiohttp.ClientSession(timeout=timeout, connector=conn) as session:
         for n in levels:
             print(f"  → concurrency {n} …", flush=True)
-            row = await run_level(session, urls, model, args.prompt, args.max_tokens, n)
+            row = await run_level(session, urls, model, args.prompt, args.max_tokens, n, args.mode)
+            _u = row["gpu_util"]
             print(f"    per-user {row['per_user_tps']:.0f} tok/s · "
                   f"aggregate {row['aggregate_tps']:.0f} tok/s · "
-                  f"KV {row['kv_cache_pct']:.0f}% · util {row['gpu_util']:.0f}% "
+                  f"KV {row['kv_cache_pct']:.2f}% · peak-running {row['running_peak']} · "
+                  f"util {(f'{_u:.0f}%' if _u is not None else 'N/A')} "
                   f"({row['completed']}/{n} ok)", flush=True)
             per_n.append(row)
     return per_n
@@ -198,6 +206,9 @@ def main():
     ap.add_argument("--precision", default="FP8", help="precision label for this capture")
     ap.add_argument("--concurrency", default="1,2,4,8,16", help="comma-separated concurrency levels")
     ap.add_argument("--max-tokens", type=int, default=128)
+    ap.add_argument("--mode", choices=["chat", "completions"], default="chat",
+                    help="chat = /v1/chat/completions (default); completions = /v1/completions "
+                         "(use for checkpoints whose tokenizer has no chat template, e.g. NVFP4)")
     ap.add_argument("--prompt", default="Write a Python function that returns the nth Fibonacci number, with a short docstring.")
     ap.add_argument("--hf-eager-tps", type=float, default=None,
                     help="matched single-user HF-eager tok/s from the demo (enables the production-delta card)")
