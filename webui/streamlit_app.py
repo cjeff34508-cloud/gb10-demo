@@ -238,6 +238,12 @@ st.markdown("""
     letter-spacing: 0.05em;
     text-transform: uppercase;
 }
+.dell-header .dell-tagline {
+    font-size: 0.95em;
+    font-weight: 800;
+    margin-top: 6px;
+    opacity: 0.95;
+}
 .dell-header .dell-badge {
     background: rgba(255,255,255,0.15);
     border: 1px solid rgba(255,255,255,0.3);
@@ -545,6 +551,7 @@ st.markdown(f"""
     <div class="dell-logo"><strong>DELL</strong> &nbsp;technologies</div>
     <div class="dell-title">Dell Pro Max GB10 Demo Suite</div>
     <div class="dell-subtitle">Blackwell · Dell Pro Max GB10 · aarch64 &nbsp;|&nbsp; AI Workload Benchmarking</div>
+    <div class="dell-tagline"><strong>A tool to help demonstrate the AI-to-hardware relationship.</strong></div>
   </div>
   <div class="dell-badge">
     Dell Pro Max GB10<br>
