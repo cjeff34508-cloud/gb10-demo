@@ -228,6 +228,19 @@ def a5_captures(report):
     report("5 captures", True, f"{checked} capture points within band [0.5,2.0]x")
 
 
+def a7_toggle(report):
+    if not HAS_MODE:
+        report("7 toggle", None, "capacity_mode not implemented yet")
+        return
+    # The toggle must actually move platform sizing for a small model on the GB10.
+    rr = _call("Qwen2.5-7B", "Dell Pro Max GB10", 64, 512, mode="replicated")
+    rs = _call("Qwen2.5-7B", "Dell Pro Max GB10", 64, 512, mode="shared")
+    if not (rs.num_nodes < rr.num_nodes and rs.sessions_per_node > rr.sessions_per_node):
+        raise Fail(f"toggle had no sizing effect: replicated nodes={rr.num_nodes}/"
+                   f"sess={rr.sessions_per_node} vs shared nodes={rs.num_nodes}/sess={rs.sessions_per_node}")
+    report("7 toggle", True, f"Qwen2.5-7B: {rr.num_nodes} nodes (repl) -> {rs.num_nodes} node(s) (shared)")
+
+
 def a6_edges(report):
     # A model too big for one GPU must still size via TP / multi-node in BOTH modes.
     modes = (None,) if not HAS_MODE else ("replicated", "shared")
@@ -260,7 +273,7 @@ def main():
         results.append((name, ok, msg))
 
     passed = failed = skipped = 0
-    for fn in (a1_backcompat, a2_ordering, a3_cost, a4_monotonic, a5_captures, a6_edges):
+    for fn in (a1_backcompat, a2_ordering, a3_cost, a4_monotonic, a5_captures, a6_edges, a7_toggle):
         try:
             fn(report)
         except Fail as e:

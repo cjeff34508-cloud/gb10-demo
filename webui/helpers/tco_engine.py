@@ -1402,7 +1402,7 @@ def calculate_tco(
     amort_years:    int  = 3,
     power_rate:     float = 0.12,
     add_infra_pct:  float = 0.15,     # networking + storage overhead
-    capacity_mode:  str  = "replicated",   # "shared" (weights once/GPU) | "replicated"
+    capacity_mode:  str  = "shared",   # "shared" (weights once/GPU) | "replicated"
 ) -> TCOResult:
     sys  = DELL_SYSTEMS.get(system_name)
     if not sys:

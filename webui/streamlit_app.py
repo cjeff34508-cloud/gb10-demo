@@ -4,6 +4,7 @@ Organised by scenario (not modality): each run surfaces workload phase,
 primary bottleneck, operating condition, and business-relevant output.
 """
 
+import base64
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -26,13 +27,34 @@ from helpers.tco_engine import (
     DELL_SYSTEMS, DEFAULT_SYSTEMS, MODEL_CATALOG, calculate_tco, best_fit_systems, format_usd,
     model_memory_gb, GB10_BW_GBS, assign_ratings, RATING_COLORS, RATING_ORDER,
     MC_PATH_PRESETS, MC_BW_EFF, calculate_tco_montecarlo,
-    supported_precisions, native_precision,
+    supported_precisions, native_precision, model_detail_lines,
+    session_footprint,
     workforce_demand, WORKFORCE_DEFAULTS,
 )
 from helpers.model_info import lookup_model_info, designed_precision, precision_compatible
 from helpers.on_device_ai import narrator_available, make_narrator, NARRATOR_MODEL, NARRATOR_PRECISION
-from helpers.cloud_pricing import api_token_costs
+from helpers.cloud_pricing import api_token_costs, api_comparison_band
 from helpers.vllm_reference import load_vllm_reference, has_real_fp4
+
+# Official Dell Technologies logo, embedded as a data URI (Streamlit doesn't serve
+# arbitrary static files). The asset is the dark/reverse-on-light lockup, so the
+# header renders it on a white chip. Falls back to a text wordmark if missing.
+_LOGO_PATH = Path(__file__).parent / "assets" / "logo.png"
+try:
+    _logo_b64 = base64.b64encode(_LOGO_PATH.read_bytes()).decode("ascii")
+    DELL_LOGO_HTML = (
+        f'<span class="dell-logo-chip"><img class="dell-logo-img" '
+        f'src="data:image/png;base64,{_logo_b64}" alt="Dell Technologies"></span>'
+    )
+except OSError:
+    DELL_LOGO_HTML = '<strong>DELL</strong> &nbsp;technologies'
+
+
+def sys_label(name: str) -> str:
+    """Display label for a Dell system: drop the brand prefix ('Dell PowerEdge')
+    and keep just the model + its GPU descriptor in parens, so builds on the same
+    chassis (e.g. the two XE7740s) stay distinct."""
+    return name.replace("Dell PowerEdge ", "").replace("Dell ", "")
 
 # Display order for precisions: lowest bit-width first → highest.
 _PRECISION_ORDER = ["FP4", "NVFP4", "INT4", "FP8", "INT8", "FP16", "BF16", "TF32", "FP32", "FP64"]
@@ -226,6 +248,15 @@ st.markdown("""
     opacity: 0.9;
 }
 .dell-header .dell-logo strong { font-weight: 800; letter-spacing: 0.05em; }
+.dell-header .dell-logo-chip {
+    display: inline-flex;
+    align-items: center;
+    background: #ffffff;
+    border-radius: 6px;
+    padding: 6px 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+.dell-header .dell-logo-img { height: 22px; width: auto; display: block; }
 .dell-header .dell-title {
     font-size: 1.55em;
     font-weight: 700;
@@ -548,7 +579,7 @@ run_benchmark = st.sidebar.button("🚀 Run Benchmark", type="primary", use_cont
 st.markdown(f"""
 <div class="dell-header">
   <div>
-    <div class="dell-logo"><strong>DELL</strong> &nbsp;technologies</div>
+    <div class="dell-logo">{DELL_LOGO_HTML}</div>
     <div class="dell-title">Dell Pro Max GB10 Demo Suite</div>
     <div class="dell-subtitle">Blackwell · Dell Pro Max GB10 · aarch64 &nbsp;|&nbsp; AI Workload Benchmarking</div>
     <div class="dell-tagline"><strong>A tool to help demonstrate the AI-to-hardware relationship.</strong></div>
@@ -1941,6 +1972,7 @@ with tab_tco:
     tco_model = tco_precision = None
     tco_users = tco_output_toks = tco_ctx = tco_tps_override = 0
     tco_employees = 0
+    tco_capacity_mode = "shared"
     wf = None
     mc_resident = mc_bytes = mc_steps = mc_target = 0
 
@@ -2049,7 +2081,7 @@ with tab_tco:
                 "Context Length",
                 options=[256, 512, 1024, 2048, 4096, 8192, 16384, 32768,
                          65536, 131072, 262144, 524288],
-                value=512,
+                value=131072,
                 format_func=lambda v: f"{v // 1024}K" if v >= 1024 else str(v),
             )
 
@@ -2094,6 +2126,22 @@ with tab_tco:
                 help="Tokens/sec measured on Dell Pro Max GB10 for this model+precision. Used to scale projections.",
             )
 
+            st.markdown("**Capacity Model**")
+            _CAP_LABELS = {
+                "Shared-weights (continuous batching)": "shared",
+                "Replicated per-user":                 "replicated",
+            }
+            tco_capacity_mode = _CAP_LABELS[st.radio(
+                "How concurrent sessions pack into VRAM",
+                options=list(_CAP_LABELS.keys()),
+                index=0,
+                key="tco_capacity_mode",
+                help="**Shared-weights** = one weight copy per GPU, KV cache for many users "
+                     "fills the rest (how vLLM / TRT-LLM actually serve). **Replicated** = "
+                     "every session carries its own full weight copy (naive worst case). "
+                     "This drives sessions/node → nodes → CapEx → TCO → $/MTok.",
+            )]
+
     with tco_c3:
         st.markdown("**Systems to Compare**")
         # Scope gates the catalog (~76 systems): defaulting to all of them would mean 76 TCO
@@ -2133,8 +2181,19 @@ with tab_tco:
             options=list(DELL_SYSTEMS.keys()),
             default=_scope_names,
             key=f"tco_systems_{tco_scope}",
+            format_func=sys_label,
             help="Scope sets the starting selection; add any other system from this list.",
         )
+
+        # --- Selected-model architecture card (LLM profile only) --------------
+        # Mirrors the Settings tab's "About this model": the shape of the model
+        # being sized — params, layers, KV heads, preferred precision, context,
+        # and the efficiency tricks (MoE / MLA / GQA / SWA) that drive its cost.
+        if not is_fintech and tco_model:
+            st.markdown("---")
+            st.markdown("**📖 Selected Model**")
+            st.caption(tco_model)
+            st.markdown("\n".join(f"- {ln}" for ln in model_detail_lines(tco_model)))
 
     if not tco_systems:
         st.warning("Select at least one system to compare.")
@@ -2160,7 +2219,7 @@ with tab_tco:
             _si = DELL_SYSTEMS[_sn]
             _gpus = _si["gpus_per_node"]
             _price_rows.append({
-                "Platform":       _sn,
+                "Platform":       sys_label(_sn),
                 "GPUs / Unit":    _gpus,
                 "GPU":            _si["gpu_model"],
                 "Link":           _si.get("link_label", "—"),
@@ -2190,14 +2249,35 @@ with tab_tco:
     else:
         _eff_ctx = tco_ctx + tco_output_toks   # KV cache holds context + generated output
         m_gb = model_memory_gb(tco_model, tco_precision, batch_size=1, context_len=_eff_ctx)
+        _w_gb, _kv_gb = session_footprint(tco_model, tco_precision, context_len=_eff_ctx)
         info = MODEL_CATALOG.get(tco_model, {})
         ma1, ma2, ma3, ma4 = st.columns(4)
         ma1.metric("Model Params", f"{info.get('params_b', 0):.1f}B")
-        ma2.metric("VRAM / Session", f"{m_gb:.1f} GB",
-                   help=f"Weights + KV cache for {_eff_ctx:,} tokens "
-                        f"({tco_ctx:,} ctx + {tco_output_toks:,} output)")
-        ma3.metric("Precision", tco_precision)
-        ma4.metric("Fits on Dell Pro Max GB10 (128 GB)?", "Yes" if m_gb <= 128 else "No")
+        if tco_capacity_mode == "shared":
+            # Shared weights: one copy loaded per GB10, KV fills the rest.
+            _max_sess = int((128 - _w_gb) / _kv_gb) if (_w_gb < 128 and _kv_gb > 0) else 0
+            ma2.metric("Weights (once)", f"{_w_gb:.1f} GB",
+                       help="Model weights loaded ONCE per GPU; shared across all "
+                            "concurrent sessions on that GPU.")
+            ma3.metric("KV / Session", f"{_kv_gb:.2f} GB",
+                       help=f"KV cache added per concurrent session at {_eff_ctx:,} tokens "
+                            f"({tco_ctx:,} ctx + {tco_output_toks:,} output).")
+            ma4.metric("Max Sessions / GB10", f"{_max_sess:,}" if _max_sess else "0 — needs multi-GPU",
+                       help="How many concurrent sessions fit on one 128 GB GB10: "
+                            "(128 GB − weights) ÷ KV/session.")
+        else:
+            ma2.metric("VRAM / Session", f"{m_gb:.1f} GB",
+                       help=f"Weights + KV cache for {_eff_ctx:,} tokens "
+                            f"({tco_ctx:,} ctx + {tco_output_toks:,} output). "
+                            "Replicated mode carries a full weight copy per session.")
+            ma3.metric("Precision", tco_precision)
+            ma4.metric("Fits on Dell Pro Max GB10 (128 GB)?", "Yes" if m_gb <= 128 else "No")
+        st.caption(
+            f"**Capacity model: {'Shared-weights (continuous batching)' if tco_capacity_mode=='shared' else 'Replicated per-user'}** — "
+            + ("one weight copy per GPU, KV cache packs the remaining VRAM (how vLLM/TRT-LLM serve)."
+               if tco_capacity_mode == "shared"
+               else "every concurrent session carries its own full weight copy (naive worst case).")
+        )
 
     # -----------------------------------------------------------------------
     # Workforce demand — total employees → effective concurrent sessions
@@ -2278,6 +2358,7 @@ with tab_tco:
                     amort_years=tco_amort,
                     power_rate=tco_power,
                     add_infra_pct=tco_infra_pct,
+                    capacity_mode=tco_capacity_mode,
                 )
         except Exception as exc:
             _results_by_sys[sname] = exc
@@ -2303,7 +2384,7 @@ with tab_tco:
                 tco_rows.append({
                     "_result": None, "System": sname, "GPU": sys_info["gpu_model"],
                     "Link": sys_info.get("link_label", "—"), "BW/GPU": "—",
-                    "Decode Tok/s/User": "—", "Per-Copy": "—", "Nodes": "—",
+                    "Decode Tok/s/User": "—", "Sessions/Node": "—", "Per-Copy": "—", "Nodes": "—",
                     "GPUs": "—", "Unit $": format_usd(sys_info["system_price"]),
                     "CapEx": "—", f"{tco_amort}yr TCO": "—", "$/MTok": "—",
                     "Rating": f"Error: {r}",
@@ -2335,6 +2416,8 @@ with tab_tco:
             "Link":               r.link_label,
             "BW/GPU":             f"{r.mem_bw_tbs:.2f} TB/s",
             "Decode Tok/s/User":  f"{r.tps_per_user:,.0f}" if r.predicted_tps else "—",
+            "Sessions/Node":      (f"{r.sessions_per_node:,}" if r.predicted_tps and r.sessions_per_node
+                                   else ("1 (multi-node)" if r.predicted_tps else "—")),
             "Per-Copy":           _span if r.predicted_tps else "—",
             "Nodes":              f"{r.num_nodes:,}",
             "GPUs":               f"{r.gpus_total:,}",
@@ -2377,12 +2460,19 @@ with tab_tco:
             f"{tco_amort}-yr window. **Unit $** is the per-node/per-rack list price."
         )
     else:
+        _cap_desc = ("**Shared-weights (continuous batching)** — one weight copy per GPU, KV "
+                     "cache packs the rest (how vLLM/TRT-LLM serve)."
+                     if tco_capacity_mode == "shared" else
+                     "**Replicated per-user** — every session carries its own full weight copy "
+                     "(naive worst case).")
         st.caption(
-            f"Ranked by **total cost** — lowest {tco_amort}yr TCO first (Not-Viable systems last). "
-            "**Rating** = performance + cost blend (Best → Not Viable). "
-            "**Decode Tok/s/User** is the single-stream speed each user feels — set by per-GPU "
-            "**memory bandwidth** (HBM3 ≫ HBM2) and the **Link** fabric used to span the model "
-            "(NVLink ≫ PCIe; crossing nodes over InfiniBand costs more still). "
+            f"Capacity model: {_cap_desc}  Ranked by **total cost** — lowest {tco_amort}yr TCO "
+            "first (Not-Viable systems last). **Rating** = performance + cost blend (Best → Not "
+            "Viable). **Decode Tok/s/User** is the single-stream speed each user feels — set by "
+            "per-GPU **memory bandwidth** (HBM3 ≫ HBM2) and the **Link** fabric used to span the "
+            "model (NVLink ≫ PCIe; crossing nodes over InfiniBand costs more still). "
+            "**Sessions/Node** is how many concurrent users one node serves under the chosen "
+            "capacity model — the lever that sets **Nodes** and cost. "
             "**Per-Copy** shows GPUs × nodes one model copy spans — ⚠multi-node means it can't fit "
             "one node and pays a cross-node penalty. **Unit $** is the per-node/per-rack list price."
         )
@@ -2409,7 +2499,10 @@ with tab_tco:
         st.stop()
 
     display_cols = [k for k in _table_rows[0].keys() if k != "_result"]
-    df_tco = pd.DataFrame([{k: row[k] for k in display_cols} for row in _table_rows])
+    df_tco = pd.DataFrame([
+        {k: (sys_label(row[k]) if k == "System" else row[k]) for k in display_cols}
+        for row in _table_rows
+    ])
 
     def _color_rating(val):
         key = val if val in RATING_COLORS else (
@@ -2429,7 +2522,7 @@ with tab_tco:
         br = best["_result"]
         if tco_profile == "fintech":
             st.success(
-                f"🏆 **Fewest GPUs for the Monte-Carlo target: {best['System']}**  \n"
+                f"🏆 **Fewest GPUs for the Monte-Carlo target: {sys_label(best['System'])}**  \n"
                 f"### 📈 {br.gpus_total:,} GPUs · {br.paths_per_sec/1e9:,.2f}B paths/s\n"
                 f"{br.mem_bw_tbs:.2f} TB/s/GPU · {br.working_set_gb:,.1f} GB working set · "
                 f"{br.num_nodes} node(s)  \n"
@@ -2441,7 +2534,7 @@ with tab_tco:
             )
         else:
             st.success(
-                f"🏆 **Recommended: {best['System']}**  \n"
+                f"🏆 **Recommended: {sys_label(best['System'])}**  \n"
                 f"### 💰 Total Cost: {format_usd(br.tco_usd)}\n"
                 f"{tco_amort}-yr TCO — {format_usd(br.capex_usd)} CapEx + power · "
                 f"{br.num_nodes} node(s) · {br.gpus_total:,} GPUs  \n"
@@ -2479,7 +2572,7 @@ with tab_tco:
             continue
         if r.rating != "Not Viable":
             _ai_systems.append({
-                "name": row["System"], "rating": r.rating or r.recommendation,
+                "name": sys_label(row["System"]), "rating": r.rating or r.recommendation,
                 "decode_per_user": r.tps_per_user, "cluster_tps": r.predicted_tps,
                 "mem_bw_tbs": r.mem_bw_tbs, "link": r.link_label,
                 "nodes": r.num_nodes, "gpus": r.gpus_total, "amort": tco_amort,
@@ -2491,7 +2584,7 @@ with tab_tco:
             # First viable row is the top-ranked "Best" platform — cloud compares to it.
             if _best_entry is None:
                 _best_entry = {
-                    "name": row["System"],
+                    "name": sys_label(row["System"]),
                     "decode_per_user": r.tps_per_user,
                     "cost_per_mtok": (f"${r.cost_per_mtok:.4f}" if r.cost_per_mtok else "n/a"),
                     "tco": format_usd(r.tco_usd),
@@ -2503,6 +2596,7 @@ with tab_tco:
     # profile (FinTech Monte-Carlo has no token notion).
     if not is_fintech:
         _api_costs = api_token_costs(int(tco_ctx), int(tco_output_toks))
+        _band = api_comparison_band(int(tco_ctx), int(tco_output_toks))
 
         with st.expander("☁️ Cloud API token cost for this workload (Claude / Gemini)", expanded=False):
             _best_name = _best_entry["name"] if _best_entry else "the best on-prem system"
@@ -2512,6 +2606,41 @@ with tab_tco:
                 f"**$/1M output tok** loads the proportional input, so it compares directly to the "
                 f"best on-prem option (**{_best_name}: {_best_mtok} per 1M output tok**)."
             )
+
+            # Headline hosted-API price point + a low/high band around it.
+            _pt, _lo, _hi = _band.get("point"), _band.get("low"), _band.get("high")
+            if _pt:
+                _delta = None
+                if _lo and _hi:
+                    _delta = (f"range ${_lo['cost_per_mtok_out']:,.2f} – "
+                              f"${_hi['cost_per_mtok_out']:,.2f} / 1M out")
+                st.metric(
+                    f"Cloud price point — {_pt['model']}",
+                    f"${_pt['cost_per_mtok_out']:,.2f} / 1M output tok",
+                    delta=_delta, delta_color="off",
+                    help="Representative hosted-API rate this comparison quotes, bracketed "
+                         "by a low and high anchor below.",
+                )
+            _band_rows = []
+            for _role, _lbl in (("low", "Low"), ("point", "Price point"), ("high", "High")):
+                _c = _band.get(_role)
+                if _c:
+                    _band_rows.append({
+                        "Band":             _lbl,
+                        "Model":            _c["model"],
+                        "Provider":         _c["provider"],
+                        "$/Request":        f"${_c['cost_per_request']:.5f}",
+                        "$/1M output tok":  f"${_c['cost_per_mtok_out']:,.2f}",
+                        "List in/out $/1M": f"${_c['in_price']:.2f} / ${_c['out_price']:.2f}",
+                    })
+            if _band_rows:
+                st.dataframe(pd.DataFrame(_band_rows), use_container_width=True, hide_index=True)
+            st.caption("Low = Gemini 2.5 Flash · price point = Gemini 3.5 Flash · high = "
+                       "Claude Sonnet 4.6. Published standard-context list prices (2026) — "
+                       "verify before quoting. Sources: platform.claude.com, "
+                       "ai.google.dev/gemini-api/docs/pricing.")
+
+            st.caption("All hosted options for reference:")
             st.dataframe(pd.DataFrame([
                 {
                     "Model":            c["model"],
@@ -2522,8 +2651,6 @@ with tab_tco:
                 }
                 for c in _api_costs
             ]), use_container_width=True, hide_index=True)
-            st.caption("Published standard-context list prices (2026). Sources: platform.claude.com, "
-                       "ai.google.dev/gemini-api/docs/pricing.")
 
     st.markdown("### 🟢 On-Device AI Analysis")
     st.caption("Generated locally on the Dell Pro Max GB10 by "
@@ -2546,7 +2673,7 @@ with tab_tco:
             if _do_rec:
                 st.write_stream(_narr.tco_recommendation(_workload, _ai_systems[:8]))
             else:
-                st.write_stream(_narr.cloud_comparison(_workload, _best_entry, _api_costs))
+                st.write_stream(_narr.cloud_comparison(_workload, _best_entry, _api_costs, band=_band))
         else:
             st.warning(_narr.reason if _narr else _ai_reason)
 
@@ -2727,7 +2854,7 @@ with tab_tco:
             scale_rows.append({
                 # Full name, not split("(")[0] — that collapsed every GPU variant of a chassis
                 # into identical rows (all 6 R770 builds became one "Dell PowerEdge R770").
-                "System":       sname.replace("Dell PowerEdge ", "").replace("Dell ", ""),
+                "System":       sys_label(sname),
                 "BW (GB/s)":    f"{sinfo['gpu_bw_gbs']:,}",
                 "BW vs Dell Pro Max GB10":   f"{sinfo['gpu_bw_gbs'] / GB10_BW_GBS:.1f}×",
                 "Proj. TPS":    f"{_proj_tps:,.0f}",
