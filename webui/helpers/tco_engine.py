@@ -892,6 +892,124 @@ def native_precision(model_name: str) -> str:
     sup = supported_precisions(model_name)
     return sup[0] if sup else "FP16"
 
+# ---------------------------------------------------------------------------
+# Architecture detail — powers the TCO "Selected Model" card. Published config
+# numbers (layers / heads / hidden / native context) for the models we have solid
+# figures on. The card degrades gracefully when a model is absent here (it still
+# shows params, preferred precision, and MoE active-params from MODEL_CATALOG).
+#   attn:  "GQA" (grouped-query) · "MHA" (full) · "MLA" (latent, DeepSeek)
+#   swa:   sliding-window attention present
+#   experts/topk/shared_experts: MoE routing (with MODEL_CATALOG active_b)
+# ---------------------------------------------------------------------------
+MODEL_ARCH: dict[str, dict] = {
+    "TinyLlama-1.1B":        {"layers": 22,  "q_heads": 32,  "kv_heads": 4,  "hidden": 2048,  "ctx": 2048,   "attn": "GQA"},
+    "Llama-3.2-1B":          {"layers": 16,  "q_heads": 32,  "kv_heads": 8,  "hidden": 2048,  "ctx": 131072, "attn": "GQA"},
+    "Llama-3.2-3B":          {"layers": 28,  "q_heads": 24,  "kv_heads": 8,  "hidden": 3072,  "ctx": 131072, "attn": "GQA"},
+    "Gemma-2-9B":            {"layers": 42,  "q_heads": 16,  "kv_heads": 8,  "hidden": 3584,  "ctx": 8192,   "attn": "GQA", "swa": True},
+    "Mistral-7B":            {"layers": 32,  "q_heads": 32,  "kv_heads": 8,  "hidden": 4096,  "ctx": 8192,   "attn": "GQA", "swa": True},
+    "Qwen2.5-7B":            {"layers": 28,  "q_heads": 28,  "kv_heads": 4,  "hidden": 3584,  "ctx": 131072, "attn": "GQA"},
+    "Llama-3.1-8B":          {"layers": 32,  "q_heads": 32,  "kv_heads": 8,  "hidden": 4096,  "ctx": 131072, "attn": "GQA"},
+    "Qwen3-8B":              {"layers": 36,  "q_heads": 32,  "kv_heads": 8,  "hidden": 4096,  "ctx": 131072, "attn": "GQA"},
+    "nvidia/Qwen3-8B-NVFP4": {"layers": 36,  "q_heads": 32,  "kv_heads": 8,  "hidden": 4096,  "ctx": 131072, "attn": "GQA"},
+    "Phi-4 (14B)":           {"layers": 40,  "q_heads": 40,  "kv_heads": 10, "hidden": 5120,  "ctx": 16384,  "attn": "GQA"},
+    "Qwen2.5-14B":           {"layers": 48,  "q_heads": 40,  "kv_heads": 8,  "hidden": 5120,  "ctx": 131072, "attn": "GQA"},
+    "Qwen3-14B":             {"layers": 40,  "q_heads": 40,  "kv_heads": 8,  "hidden": 5120,  "ctx": 131072, "attn": "GQA"},
+    "Mistral-Small-24B":     {"layers": 40,  "q_heads": 32,  "kv_heads": 8,  "hidden": 5120,  "ctx": 32768,  "attn": "GQA"},
+    "Gemma-2-27B":           {"layers": 46,  "q_heads": 32,  "kv_heads": 16, "hidden": 4608,  "ctx": 8192,   "attn": "GQA", "swa": True},
+    "Gemma-3-27B":           {"layers": 62,  "q_heads": 32,  "kv_heads": 16, "hidden": 5376,  "ctx": 131072, "attn": "GQA", "swa": True},
+    "Qwen2.5-32B":           {"layers": 64,  "q_heads": 40,  "kv_heads": 8,  "hidden": 5120,  "ctx": 131072, "attn": "GQA"},
+    "Qwen3-32B":             {"layers": 64,  "q_heads": 64,  "kv_heads": 8,  "hidden": 5120,  "ctx": 131072, "attn": "GQA"},
+    "Mixtral-8x7B":          {"layers": 32,  "q_heads": 32,  "kv_heads": 8,  "hidden": 4096,  "ctx": 32768,  "attn": "GQA", "swa": True, "experts": 8, "topk": 2},
+    "Llama-3.3-70B":         {"layers": 80,  "q_heads": 64,  "kv_heads": 8,  "hidden": 8192,  "ctx": 131072, "attn": "GQA"},
+    "Qwen2.5-72B":           {"layers": 80,  "q_heads": 64,  "kv_heads": 8,  "hidden": 8192,  "ctx": 131072, "attn": "GQA"},
+    "Command-R+ (104B)":     {"layers": 64,  "q_heads": 96,  "kv_heads": 8,  "hidden": 12288, "ctx": 131072, "attn": "GQA"},
+    "Mistral-Large-123B":    {"layers": 88,  "q_heads": 96,  "kv_heads": 8,  "hidden": 12288, "ctx": 131072, "attn": "GQA"},
+    "Mixtral-8x22B":         {"layers": 56,  "q_heads": 48,  "kv_heads": 8,  "hidden": 6144,  "ctx": 65536,  "attn": "GQA", "experts": 8, "topk": 2},
+    "Qwen3-235B-A22B":       {"layers": 94,  "q_heads": 64,  "kv_heads": 4,  "hidden": 4096,  "ctx": 131072, "attn": "GQA", "experts": 128, "topk": 8},
+    "Nemotron-4-340B":       {"layers": 96,  "q_heads": 96,  "kv_heads": 8,  "hidden": 18432, "ctx": 4096,   "attn": "GQA"},
+    "Llama-3.1-405B":        {"layers": 126, "q_heads": 128, "kv_heads": 8,  "hidden": 16384, "ctx": 131072, "attn": "GQA"},
+    "Llama-3.1-405B (FP8)":  {"layers": 126, "q_heads": 128, "kv_heads": 8,  "hidden": 16384, "ctx": 131072, "attn": "GQA"},
+    "DeepSeek-V3 (671B)":    {"layers": 61,  "q_heads": 128, "hidden": 7168, "ctx": 131072, "attn": "MLA", "kv_latent": 512, "experts": 256, "topk": 8, "shared_experts": 1},
+    "DeepSeek-R1 (671B)":    {"layers": 61,  "q_heads": 128, "hidden": 7168, "ctx": 131072, "attn": "MLA", "kv_latent": 512, "experts": 256, "topk": 8, "shared_experts": 1},
+}
+
+
+def _fmt_ctx(n: int) -> str:
+    """131072 → '128K', 4096 → '4K', 2048 → '2K'."""
+    if n and n >= 1024:
+        return f"{n / 1024:g}K"
+    return str(n)
+
+
+def _efficiency_tags(info: dict, arch: dict) -> list[str]:
+    """Human-readable efficiency modifiers (attention scheme, SWA, MoE routing)."""
+    tags: list[str] = []
+    attn = arch.get("attn")
+    if attn == "MLA":
+        tags.append("MLA (multi-head latent attention)")
+    elif attn == "GQA":
+        tags.append("GQA (grouped-query attention)")
+    elif attn == "MQA":
+        tags.append("MQA (multi-query attention)")
+    elif attn == "MHA":
+        tags.append("MHA (full multi-head attention)")
+    if arch.get("swa"):
+        tags.append("Sliding-window attention")
+    if info.get("type") == "moe":
+        if arch.get("experts"):
+            s = f"MoE ({arch['experts']} experts, top-{arch.get('topk', '?')}"
+            if arch.get("shared_experts"):
+                s += f" + {arch['shared_experts']} shared"
+            s += ")"
+            tags.append(s)
+        else:
+            tags.append("MoE (sparse mixture-of-experts)")
+    return tags
+
+
+def model_detail_lines(model_name: str) -> list[str]:
+    """Markdown bullet bodies describing a catalog model's architecture, for the
+    TCO 'Selected Model' card. Covers exactly the fields the demo calls out:
+    parameters, layers, KV heads, preferred precision, context length, and the
+    key efficiency modifications (MoE / MLA / GQA / SWA)."""
+    info = MODEL_CATALOG.get(model_name, {})
+    arch = MODEL_ARCH.get(model_name, {})
+    lines: list[str] = []
+
+    p = info.get("params_b")
+    if info.get("type") == "moe" and info.get("active_b"):
+        lines.append(f"**Parameters:** {p:g}B total · **{info['active_b']:g}B active**/token")
+    elif p is not None:
+        lines.append(f"**Parameters:** {p:g}B")
+
+    if arch.get("layers"):
+        lines.append(f"**Layers:** {arch['layers']}")
+
+    if arch.get("attn") == "MLA":
+        lines.append(f"**KV heads:** MLA — compressed {arch.get('kv_latent', '?')}-dim "
+                     "latent KV (no per-head KV cache)")
+    elif arch.get("kv_heads"):
+        q = arch.get("q_heads")
+        if q and q != arch["kv_heads"]:
+            lines.append(f"**KV heads:** {arch['kv_heads']} (of {q} query heads · "
+                         f"{q // arch['kv_heads']}× GQA reduction)")
+        else:
+            lines.append(f"**KV heads:** {arch['kv_heads']}")
+
+    lines.append(f"**Preferred precision:** {native_precision(model_name)}")
+
+    if arch.get("ctx"):
+        lines.append(f"**Context length:** {_fmt_ctx(arch['ctx'])}")
+
+    eff = _efficiency_tags(info, arch)
+    if eff:
+        lines.append("**Key efficiency:** " + " · ".join(eff))
+    elif info.get("category") in ("VLM", "CNN"):
+        lines.append(f"**Type:** {info['category']} {info.get('type', '')} (no KV cache)")
+
+    return lines
+
+
 _BYTES_PER_PARAM = {
     "FP64": 8.0, "FP32": 4.0, "TF32": 4.0, "FP16": 2.0, "BF16": 2.0,  # TF32 stores as FP32 (4B)
     "INT8": 1.0, "FP8": 1.0, "FP4": 0.5, "NVFP4": 0.5,
@@ -932,6 +1050,15 @@ MC_BW_EFF = 0.80
 #   EXP = 0.5 → sqrt: aggregate ∝ √k. Credits the partial weight-amortisation a real
 #               batched server gets, while killing the linear free-lunch. Default.
 _COPY_BW_SHARE_EXP = 0.5
+
+# Bandwidth-share exponent for SHARED-WEIGHTS / continuous-batching mode. Here there
+# is ONE weight copy per GPU and the batch reads it once per step for all resident
+# sessions, so per-user tok/s falls off only gently as concurrency rises (aggregate
+# stays near-linear). Hence a much higher exponent than the replicated √-law above.
+# Calibrated so the analytic shared aggregate lands within the real GB10 vLLM
+# captures (webui/data/vllm_reference.json) — pinned by scripts/smoke_tco_capacity.py
+# assertion 5. 1.0 = flat/linear · 0.5 = the replicated √-law.
+_BATCH_BW_SHARE_EXP = 0.90
 
 # Fleet-coordination overhead: a deployment of N nodes is NOT N× a single node. It
 # needs more networking (switches, cabling, spine), orchestration, monitoring,
@@ -982,6 +1109,11 @@ class TCOResult:
     vram_total_gb:      float = 0.0     # total VRAM per node, GB
     tps_per_user:       float = 0.0     # delivered tok/s per concurrent user
     bw_contention:      float = 1.0     # per-user BW factor from copies sharing a GPU (≤1)
+    # Capacity model (set by calculate_tco)
+    capacity_mode:      str   = "replicated"  # "shared" | "replicated"
+    sessions_per_node:  int   = 0       # concurrent sessions one node serves
+    weights_gb:         float = 0.0     # model weights loaded once per replica
+    kv_per_session_gb:  float = 0.0     # KV cache added per concurrent session
     fleet_overhead_pct: float = 0.0     # extra CapEx fraction from node-count coordination
     # Interconnect / model-parallel scaling
     gpus_per_node:      int = 0
@@ -1134,6 +1266,30 @@ def model_memory_gb(model_name: str, precision: str, batch_size: int = 1,
     return raw * (1.0 + overhead)
 
 
+def session_footprint(model_name: str, precision: str, context_len: int = 512,
+                      batch_size: int = 1) -> tuple[float, float]:
+    """Split a session's memory into ``(weights_once_gb, kv_per_session_gb)``.
+
+    Uses the SAME terms as :func:`model_memory_gb`, so they stay consistent:
+      * ``weights_once`` = raw × (1 + base_oh + batch_factor) — the fixed cost
+        loaded ONCE per weight replica (shared across sessions in batching mode).
+      * ``kv_per_session`` = raw × kv_frac — grows per concurrent session.
+    By construction ``model_memory_gb == weights_once + kv_per_session`` (the
+    replicated per-user bundle). Shared-weights capacity divides the free VRAM
+    after ONE ``weights_once`` by ``kv_per_session``; replicated divides by the sum.
+    """
+    info  = MODEL_CATALOG.get(model_name, {})
+    p_b   = info.get("params_b", 7.0)
+    bpp   = _BYTES_PER_PARAM.get(precision.upper(), 4.0)
+    raw   = p_b * bpp
+    base_oh      = 0.08
+    batch_factor = min(0.003 * batch_size, 0.20)
+    kv_frac      = min(_KV_FRAC_PER_TOKEN * context_len * batch_size, _KV_FRAC_CAP)
+    weights_once = raw * (1.0 + base_oh + batch_factor)
+    kv_per_sess  = raw * kv_frac
+    return weights_once, kv_per_sess
+
+
 def gpus_needed_for_model(model_gb: float, vram_per_gpu: float) -> int:
     """Minimum GPUs (power-of-2) to hold one model copy."""
     if vram_per_gpu >= model_gb:
@@ -1246,10 +1402,12 @@ def calculate_tco(
     amort_years:    int  = 3,
     power_rate:     float = 0.12,
     add_infra_pct:  float = 0.15,     # networking + storage overhead
+    capacity_mode:  str  = "replicated",   # "shared" (weights once/GPU) | "replicated"
 ) -> TCOResult:
     sys  = DELL_SYSTEMS.get(system_name)
     if not sys:
         raise ValueError(f"Unknown system: {system_name}")
+    shared = (capacity_mode == "shared")
 
     full_gpus      = max(sys["gpus_per_node"], 1)
     vram_per_gpu   = sys["vram_gb"] / full_gpus
@@ -1276,18 +1434,35 @@ def calculate_tco(
             mem_bw_tbs=mem_bw_tbs, vram_total_gb=sys["vram_gb"],
             gpus_per_node=full_gpus, gpus_per_copy=gpus_per_model,
             link_label=sys.get("link_label", ""), unit_price=node_price(sys, full_gpus),
+            capacity_mode=capacity_mode,
             rating="Not Viable",
             rating_reason="Model does not fit available VRAM",
         )
 
     n_users = max(num_users, 1)
 
+    # Session footprint split — weights loaded ONCE per replica vs KV per session.
+    # Shared-weights packs many sessions behind one weight copy; replicated bundles
+    # a whole weight copy into every session.
+    weights_once, kv_per_sess = session_footprint(model_name, precision, context_len=eff_ctx)
+    kv_per_sess = max(kv_per_sess, 1e-9)   # guard div-by-zero at trivial context
+
+    # Per-GPU packing density: how many sessions (shared) or whole copies (replicated)
+    # fit on ONE GPU when the model fits on a single GPU. Drives flexible-PCIe node
+    # population and bandwidth contention. gpus_per_model > 1 ⇒ a copy SPANS GPUs ⇒ 0.
+    if gpus_per_model == 1:
+        if shared:
+            per_gpu_density = max(1, int((vram_per_gpu - weights_once) / kv_per_sess))
+        else:
+            per_gpu_density = max(1, int(vram_per_gpu / max(m_gb, 1e-3)))
+    else:
+        per_gpu_density = 0
+
     # Effective node population. PCIe boxes (XE7745 / XE7740) are populated with the
     # FEWEST GPUs in [min_gpus, max_gpus] that serve this workload — so a job that
     # fits on 3 or 5 GPUs uses (and is billed for) exactly that many. SXM / rack
     # systems are always fully populated. Cost and power then scale with the count.
-    copies_per_gpu    = max(1, int(vram_per_gpu / max(m_gb, 1e-3))) if gpus_per_model == 1 else 0
-    gpus_per_node_eff = effective_node_gpus(sys, gpus_per_model, copies_per_gpu, n_users)
+    gpus_per_node_eff = effective_node_gpus(sys, gpus_per_model, per_gpu_density, n_users)
     vram_node_eff     = vram_per_gpu * gpus_per_node_eff
 
     # How many GPUs / nodes ONE model copy spans. A copy needs multiple nodes when
@@ -1303,30 +1478,43 @@ def calculate_tco(
     per_gpu_bw   = sys["gpu_bw_gbs"] / full_gpus
     tps_per_user = gb10_tps * (per_gpu_bw / GB10_BW_GBS) * parallel_eff
 
-    # Bandwidth contention: whole copies that co-reside on one physical GPU split
-    # its memory bandwidth (see _COPY_BW_SHARE_EXP). Co-residency is the number
-    # actually packed onto the busiest GPU under this load — copies_per_gpu when
-    # fully loaded, fewer at light load — so a single user sees no contention.
-    # gpus_per_model > 1 (a copy SPANS GPUs) → copies_per_gpu == 0 → no contention.
-    coresident   = min(copies_per_gpu, n_users) if copies_per_gpu else 1
-    bw_contention = coresident ** (_COPY_BW_SHARE_EXP - 1.0) if coresident > 1 else 1.0
+    # Bandwidth contention: sessions/copies that co-reside on one physical GPU split
+    # its memory bandwidth. Co-residency is the number actually packed onto the busiest
+    # GPU under this load — per_gpu_density when fully loaded, fewer at light load — so a
+    # single user sees no contention. gpus_per_model > 1 (a copy SPANS GPUs) ⇒ density 0.
+    # Shared weights amortise the weight reads across the batch (gentle _BATCH exponent);
+    # replicated copies each re-stream full weights (steep _COPY √-law).
+    share_exp    = _BATCH_BW_SHARE_EXP if shared else _COPY_BW_SHARE_EXP
+    coresident   = min(per_gpu_density, n_users) if per_gpu_density else 1
+    bw_contention = coresident ** (share_exp - 1.0) if coresident > 1 else 1.0
     tps_per_user *= bw_contention
 
-    # Concurrent model copies (1 session each) and the nodes they require.
+    # Concurrent sessions one node serves, and the nodes required for n_users.
     if nodes_per_copy > 1:
         # One copy spans several nodes → 1 session per copy; bill all nodes per copy.
-        copies_per_node      = None
+        sessions_per_node    = None
         provisioned_sessions = n_users
         nodes_needed         = n_users * nodes_per_copy
+    elif shared:
+        # Shared weights: ONE weight replica per serving group of gpus_per_model GPUs;
+        # the group's remaining VRAM (after weights) is packed with per-session KV.
+        groups_per_node = max(1, gpus_per_node_eff // max(gpus_per_model, 1))
+        group_vram      = vram_per_gpu * gpus_per_model
+        free_kv_group   = group_vram - weights_once
+        sess_per_group  = max(1, int(free_kv_group / kv_per_sess)) if free_kv_group > 0 else 1
+        sessions_per_node    = groups_per_node * sess_per_group
+        nodes_needed         = max(1, math.ceil(n_users / sessions_per_node))
+        provisioned_sessions = nodes_needed * sessions_per_node
     else:
+        # Replicated: each session carries a whole weight copy (weights + its own KV).
         vram_limited = max(1, int(vram_node_eff / max(m_gb, 1e-3)))
         if gpus_per_model > 1:
-            gpu_limited     = max(1, gpus_per_node_eff // gpus_per_model)
-            copies_per_node = min(vram_limited, gpu_limited)
+            gpu_limited       = max(1, gpus_per_node_eff // gpus_per_model)
+            sessions_per_node = min(vram_limited, gpu_limited)
         else:
-            copies_per_node = vram_limited
-        nodes_needed         = max(1, math.ceil(n_users / copies_per_node))
-        provisioned_sessions = nodes_needed * copies_per_node
+            sessions_per_node = vram_limited
+        nodes_needed         = max(1, math.ceil(n_users / sessions_per_node))
+        provisioned_sessions = nodes_needed * sessions_per_node
 
     gpus_total = nodes_needed * gpus_per_node_eff
 
@@ -1364,12 +1552,18 @@ def calculate_tco(
     elif mem_fill_pct > 85:
         rec = "Tight Fit"
         reason = f"Model uses {mem_fill_pct:.0f}% of per-GPU VRAM — limited KV headroom"
+    elif shared:
+        rec = "Single-GPU"
+        _pop = (f"{gpus_per_node_eff}-GPU node · " if sys.get("flexible_gpus") else "")
+        reason = (f"{_pop}shared weights · {sessions_per_node} sessions/node · "
+                  f"{sys.get('link_label','')}")
     else:
         rec = "Single-GPU"
         _pop = (f"{gpus_per_node_eff}-GPU node · " if sys.get("flexible_gpus") else "")
-        reason = f"{_pop}1 GPU per copy · {copies_per_node} copies/node · {sys.get('link_label','')}"
+        reason = f"{_pop}1 GPU per copy · {sessions_per_node} copies/node · {sys.get('link_label','')}"
+    _unit = "sessions" if shared else "copies"
     if bw_contention < 0.999:
-        reason += (f" · {coresident} copies share 1 GPU's BW "
+        reason += (f" · {coresident} {_unit} share 1 GPU's BW "
                    f"(−{(1 - bw_contention) * 100:.0f}% tok/s/user)")
     if fleet_overhead >= 0.10:
         reason += f" · {nodes_needed} nodes → +{fleet_overhead * 100:.0f}% fleet/coord CapEx"
@@ -1392,6 +1586,10 @@ def calculate_tco(
         vram_total_gb   = vram_node_eff,
         tps_per_user    = tps_per_user,
         bw_contention   = bw_contention,
+        capacity_mode     = capacity_mode,
+        sessions_per_node = sessions_per_node or 0,
+        weights_gb        = weights_once,
+        kv_per_session_gb = kv_per_sess,
         fleet_overhead_pct = fleet_overhead,
         gpus_per_node   = gpus_per_node_eff,
         gpus_per_copy   = gpus_per_model,

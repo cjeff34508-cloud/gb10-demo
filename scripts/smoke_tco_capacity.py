@@ -62,9 +62,9 @@ _NUM_FIELDS = ("num_nodes", "capex_usd", "annual_power_usd", "tco_usd",
 _STR_FIELDS = ("recommendation", "rec_reason")
 
 
-def _call(model, system, users, ctx, mode=None):
+def _call(model, system, users, ctx, mode=None, gb10_tps=GB10_TPS):
     kw = dict(system_name=system, model_name=model, precision=native_precision(model),
-              num_users=users, gb10_tps=GB10_TPS, output_toks=OUTPUT_TOKS,
+              num_users=users, gb10_tps=gb10_tps, output_toks=OUTPUT_TOKS,
               context_len=ctx, amort_years=3, power_rate=0.12, add_infra_pct=0.15)
     if HAS_MODE and mode is not None:
         kw["capacity_mode"] = mode
@@ -205,11 +205,16 @@ def a5_captures(report):
         cap = caps.get(ckey)
         if not cap or model not in MODEL_CATALOG:
             continue
-        for row in cap.get("per_n", []):
+        rows = cap.get("per_n", [])
+        # Anchor the single-user baseline to the capture's own n=1 measurement
+        # (analytic aggregate = n * baseline * contention; the exponent under test).
+        base_row = next((x for x in rows if x["n_users"] == 1), None)
+        baseline_tps = (base_row or rows[0])["per_user_tps"]
+        for row in rows:
             n = row["n_users"]
             if n < 8:
                 continue
-            r = _call(model, "Dell Pro Max GB10", n, 512, mode="shared")
+            r = _call(model, "Dell Pro Max GB10", n, 512, mode="shared", gb10_tps=baseline_tps)
             if r.num_nodes == 0:
                 continue
             analytic = r.predicted_tps            # aggregate tok/s
