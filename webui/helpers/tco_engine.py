@@ -1245,49 +1245,117 @@ def workforce_demand(
 # first order this fraction is model-size-independent: both KV and weights scale
 # ~linearly with parameters. This lets the TCO model meaningfully stress 300K+
 # context (the cap only bites in the multi-million-token regime).
+# Legacy weights-relative KV estimate. Retained ONLY as the fallback for a model
+# with no MODEL_ARCH entry; see kv_bytes_per_token() below for why.
 _KV_FRAC_PER_TOKEN = 3.3e-6      # ≈1.0× weights at 300K tokens
 _KV_FRAC_CAP       = 8.0         # KV up to 8× weights (multi-million-token ceiling)
 
 
-def model_memory_gb(model_name: str, precision: str, batch_size: int = 1,
-                    context_len: int = 512) -> float:
-    """Estimated GPU memory for a model at given precision + runtime conditions."""
-    info  = MODEL_CATALOG.get(model_name, {})
-    p_b   = info.get("params_b", 7.0)
-    bpp   = _BYTES_PER_PARAM.get(precision.upper(), 4.0)
-    raw   = p_b * bpp
-    # Fixed activation / runtime overhead (weights-relative).
+# ---------------------------------------------------------------------------
+# KV cache: geometric, from attention shape — NOT a fraction of weight bytes
+# ---------------------------------------------------------------------------
+# Until 2026-11-05, KV-per-session was modelled as a fraction of TOTAL weight
+# bytes (_KV_FRAC_PER_TOKEN, retained below as the no-arch fallback). That is
+# wrong for MoE in the expensive direction: experts inflate total parameters
+# without adding one byte of KV. A 235B-A22B was charged 5.00x the KV of a
+# 47B-A13 with identical attention, and DeepSeek's MLA — the scheme built to
+# make KV tiny — came out 14x more expensive than plain GQA. Both are pinned
+# by scripts/smoke_tco_capacity.py assertions 8 and 11, which were RED before
+# this change and green after.
+#
+# KV is set by attention geometry and context length, nothing else:
+#     bytes/token = 2 (K and V) x layers x kv_heads x head_dim x bytes(kv_dtype)
+# MLA (DeepSeek) caches ONE compressed latent per layer instead:
+#     bytes/token = layers x kv_latent x bytes(kv_dtype)
+#
+# VALIDATED against the only on-box measurement available: Qwen3-Coder-30B-A3B
+# (48 layers, 4 kv_heads, head_dim 128) at --kv-cache-dtype fp8 gives
+# 2 x 48 x 4 x 128 x 1 = 49,152 B = 48.0 KiB/token — exactly the figure
+# qwen-hermes recorded as "predicted 48.0 KB/token == observed".
+_KV_DTYPE_BYTES = {"FP32": 4.0, "FP16": 2.0, "BF16": 2.0, "FP8": 1.0, "INT8": 1.0}
+
+
+def kv_bytes_per_token(model_name: str, kv_dtype: str = "FP16") -> float | None:
+    """KV bytes per token from attention geometry; ``None`` if arch is unknown.
+
+    Returning ``None`` rather than a guess lets callers fall back to the legacy
+    weights-relative estimate explicitly.
+    """
+    arch = MODEL_ARCH.get(model_name)
+    if not arch:
+        return None
+    nbytes = _KV_DTYPE_BYTES.get(kv_dtype.upper(), 2.0)
+    layers = arch.get("layers")
+    if not layers:
+        return None
+    # MLA: a single compressed latent per layer, not per-head K and V.
+    if arch.get("attn") == "MLA" and arch.get("kv_latent"):
+        return float(layers * arch["kv_latent"] * nbytes)
+    kv_heads = arch.get("kv_heads") or arch.get("q_heads")
+    if not kv_heads:
+        return None
+    # head_dim is explicit wherever it is decoupled from hidden/q_heads — common
+    # in 2026 MoEs. Qwen3-Coder-30B-A3B is hidden 2048 with 32 q_heads but
+    # head_dim 128, so deriving it would be 2x wrong.
+    head_dim = arch.get("head_dim")
+    if not head_dim:
+        hidden, q_heads = arch.get("hidden"), arch.get("q_heads")
+        if not (hidden and q_heads):
+            return None
+        head_dim = hidden / q_heads
+    return float(2.0 * layers * kv_heads * head_dim * nbytes)
+
+
+def _weights_and_raw(model_name: str, precision: str,
+                     batch_size: int = 1) -> tuple[float, float]:
+    """``(weights_once_gb, raw_weight_gb)`` — sized from TOTAL params, always.
+
+    An MoE holds every expert resident even though it reads only a few per
+    token, so capacity must never follow ``active_b``. Pinned by assertion 10.
+    """
+    info = MODEL_CATALOG.get(model_name, {})
+    p_b  = info.get("params_b", 7.0)
+    bpp  = _BYTES_PER_PARAM.get(precision.upper(), 4.0)
+    raw  = p_b * bpp
     base_oh      = 0.08
     batch_factor = min(0.003 * batch_size, 0.20)
-    # KV cache grows ~linearly with sequence length and batch — the dominant
-    # term for long-context serving (e.g. 256K–512K tokens).
-    kv_frac      = min(_KV_FRAC_PER_TOKEN * context_len * batch_size, _KV_FRAC_CAP)
-    overhead     = base_oh + batch_factor + kv_frac
-    return raw * (1.0 + overhead)
+    return raw * (1.0 + base_oh + batch_factor), raw
+
+
+def _kv_per_session(model_name: str, raw_gb: float, context_len: int,
+                    batch_size: int = 1, kv_dtype: str = "FP16") -> float:
+    """KV GB for one session, geometric where possible, legacy where not."""
+    bpt = kv_bytes_per_token(model_name, kv_dtype)
+    if bpt is not None:
+        return bpt * max(context_len, 0) * batch_size / 1e9
+    kv_frac = min(_KV_FRAC_PER_TOKEN * max(context_len, 0) * batch_size, _KV_FRAC_CAP)
+    return raw_gb * kv_frac
+
+
+def model_memory_gb(model_name: str, precision: str, batch_size: int = 1,
+                    context_len: int = 512, kv_dtype: str = "FP16") -> float:
+    """Estimated GPU memory for a model at given precision + runtime conditions."""
+    weights_once, raw = _weights_and_raw(model_name, precision, batch_size)
+    return weights_once + _kv_per_session(model_name, raw, context_len,
+                                          batch_size, kv_dtype)
 
 
 def session_footprint(model_name: str, precision: str, context_len: int = 512,
-                      batch_size: int = 1) -> tuple[float, float]:
+                      batch_size: int = 1,
+                      kv_dtype: str = "FP16") -> tuple[float, float]:
     """Split a session's memory into ``(weights_once_gb, kv_per_session_gb)``.
 
-    Uses the SAME terms as :func:`model_memory_gb`, so they stay consistent:
-      * ``weights_once`` = raw × (1 + base_oh + batch_factor) — the fixed cost
-        loaded ONCE per weight replica (shared across sessions in batching mode).
-      * ``kv_per_session`` = raw × kv_frac — grows per concurrent session.
-    By construction ``model_memory_gb == weights_once + kv_per_session`` (the
-    replicated per-user bundle). Shared-weights capacity divides the free VRAM
-    after ONE ``weights_once`` by ``kv_per_session``; replicated divides by the sum.
+    ``weights_once`` is loaded ONCE per weight replica (shared across sessions
+    in batching mode) and comes from total parameters. ``kv_per_session`` grows
+    per concurrent session and comes from attention geometry. By construction
+    ``model_memory_gb == weights_once + kv_per_session`` — the replicated
+    per-user bundle — so the two stay consistent. Shared-weights capacity
+    divides free VRAM after ONE ``weights_once`` by ``kv_per_session``;
+    replicated divides by the sum.
     """
-    info  = MODEL_CATALOG.get(model_name, {})
-    p_b   = info.get("params_b", 7.0)
-    bpp   = _BYTES_PER_PARAM.get(precision.upper(), 4.0)
-    raw   = p_b * bpp
-    base_oh      = 0.08
-    batch_factor = min(0.003 * batch_size, 0.20)
-    kv_frac      = min(_KV_FRAC_PER_TOKEN * context_len * batch_size, _KV_FRAC_CAP)
-    weights_once = raw * (1.0 + base_oh + batch_factor)
-    kv_per_sess  = raw * kv_frac
-    return weights_once, kv_per_sess
+    weights_once, raw = _weights_and_raw(model_name, precision, batch_size)
+    return weights_once, _kv_per_session(model_name, raw, context_len,
+                                         batch_size, kv_dtype)
 
 
 def gpus_needed_for_model(model_gb: float, vram_per_gpu: float) -> int:
