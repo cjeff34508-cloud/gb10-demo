@@ -32,3 +32,6 @@ hf-token
 *.swp
 .vscode/
 .idea/
+
+# Local, recoverable scratch (moved strays, pre-change copies) — never commit
+backups/

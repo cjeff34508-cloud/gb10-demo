@@ -33,6 +33,28 @@ API_PRICING: dict[str, dict] = {
 }
 
 
+# The three anchors the TCO "Compare to Cloud" comparison brackets hosted-API cost
+# with: a low, a representative mid price-point (the headline the demo quotes), and a
+# frontier high. Names MUST match API_PRICING keys above.
+CLOUD_ANCHORS: dict[str, str] = {
+    "low":   "Gemini 2.5 Flash",   # cheap fast tier
+    "point": "Gemini 3.5 Flash",   # the price point the comparison quotes
+    "high":  "Claude Sonnet 4.6",  # frontier / quality anchor
+}
+
+
+def api_comparison_band(input_toks: int, output_toks: int) -> dict[str, dict]:
+    """The low / price-point / high anchors for the on-prem-vs-cloud comparison.
+
+    Returns ``{"low": row, "point": row, "high": row}`` where each row is a full
+    cost dict from :func:`api_token_costs`. ``point`` is the headline hosted-API
+    rate the demo quotes; ``low`` and ``high`` bracket the realistic range. A
+    missing anchor (name not in ``API_PRICING``) is simply omitted.
+    """
+    by_name = {c["model"]: c for c in api_token_costs(input_toks, output_toks)}
+    return {role: by_name[name] for role, name in CLOUD_ANCHORS.items() if name in by_name}
+
+
 def api_token_costs(input_toks: int, output_toks: int) -> list[dict]:
     """Per-model cost of one request that reads ``input_toks`` and writes
     ``output_toks``.

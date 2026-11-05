@@ -185,7 +185,8 @@ class OnDeviceNarrator:
 
     # -- cloud comparison (on-prem Dell Pro Max GB10 vs hosted Claude/Gemini APIs) ------------
     def cloud_comparison(self, workload: dict, onprem: Optional[dict],
-                         api_costs: Optional[list[dict]] = None) -> Iterator[str]:
+                         api_costs: Optional[list[dict]] = None,
+                         band: Optional[dict] = None) -> Iterator[str]:
         system = (
             "You are a Dell + NVIDIA solutions engineer comparing running an LLM workload "
             "ON-PREM on the customer's BEST-FIT Dell platform (named below, with its amortized "
@@ -204,17 +205,40 @@ class OnDeviceNarrator:
                     f"fits={onprem.get('fits', 'n/a')}.")
         else:
             otxt = "No selected Dell platform can host this exact model/precision."
+
+        # Frame the hosted-API side as a low / price-point / high band when available,
+        # otherwise fall back to the full cheapest-first list.
+        def _anchor(c: dict) -> str:
+            return f"{c['model']}: ${c['cost_per_mtok_out']:,.2f}/1M output tok"
+        if band and band.get("point"):
+            lines = []
+            if band.get("low"):   lines.append(f"Low anchor — {_anchor(band['low'])}")
+            lines.append(f"PRICE POINT — {_anchor(band['point'])}")
+            if band.get("high"):  lines.append(f"High anchor — {_anchor(band['high'])}")
+            api_txt = ("Hosted API cost band for ONE such request:\n" + "\n".join(lines))
+            task = (
+                "Make the on-prem-vs-API cost case, framed around the hosted-API PRICE POINT: "
+                "(1) compare the best on-prem platform's amortized $/1M output tokens against the "
+                "PRICE POINT, and bracket it with the low and high anchors — who wins at this "
+                "workload and by roughly how much across that range; "
+            )
+        else:
+            api_txt = ("Hosted API token cost for ONE such request (cheapest first):\n"
+                       f"{_fmt_api_costs(api_costs or [])}")
+            task = (
+                "Make the on-prem-vs-API cost case: (1) compare the best on-prem platform's "
+                "amortized $/1M output tokens against the cheapest and a frontier API option — "
+                "who wins at this workload and by roughly how much; "
+            )
         user = (
             f"Workload: {_fmt_workload(workload)}.\n{otxt}\n\n"
-            f"Hosted API token cost for ONE such request (cheapest first):\n"
-            f"{_fmt_api_costs(api_costs or [])}\n\n"
-            "Make the on-prem-vs-API cost case: (1) compare the best on-prem platform's amortized "
-            "$/1M output tokens against the cheapest and a frontier API option — who wins at this "
-            "workload and by roughly how much; (2) the rough monthly request volume at which the "
-            "on-prem TCO pays for itself vs per-token billing (call it an estimate); (3) non-cost "
-            "advantages of on-prem (data stays local, no egress, fixed latency, always-on) and "
-            "when the hosted API is the better call (bursty/low volume, need frontier quality, "
-            "zero ops). End with a bold one-line verdict."
+            f"{api_txt}\n\n"
+            + task +
+            "(2) the rough monthly request volume at which the on-prem TCO pays for itself vs "
+            "per-token billing (call it an estimate); (3) non-cost advantages of on-prem (data "
+            "stays local, no egress, fixed latency, always-on) and when the hosted API is the "
+            "better call (bursty/low volume, need frontier quality, zero ops). End with a bold "
+            "one-line verdict."
         )
         return self._stream(system, user, max_new_tokens=420)
 
