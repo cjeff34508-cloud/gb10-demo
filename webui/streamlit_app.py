@@ -657,6 +657,26 @@ def retain_for_narration(inf) -> None:
     st.session_state.narrator = None
 
 
+def release_retained() -> None:
+    """Free any model retained for narration, BEFORE loading another one.
+
+    retain_for_narration() runs in the per-precision `finally`, i.e. AFTER the
+    next iteration would have loaded. Without this call the loop holds precision
+    N resident while loading N+1 — two models at once, which OOMs on a 121 GB
+    unified pool (two 14B at FP32 is ~124 GB). The retained model is only meant
+    to outlive the RUN, not the next load inside it.
+    """
+    prev = st.session_state.get("bench_inf")
+    if prev is not None:
+        try:
+            prev.unload()
+        except Exception:
+            pass
+    st.session_state.bench_inf = None
+    st.session_state.narrator = None
+    free_cuda_memory()
+
+
 def ensure_narrator(show_spinner: bool = True):
     """Narrate with the last benchmarked model if one is resident, else load ours."""
     n = st.session_state.get("narrator")
@@ -794,6 +814,7 @@ with tab_benchmark:
         local_summary = None   # on-device talking points (LLM scenarios only)
 
         if scenario == "Batch Limit Sweep":
+            release_retained()
             inf = LLMInference(selected_model, sweep_prec)
             sweep_results = []
             if not inf.load_model():
@@ -865,6 +886,9 @@ with tab_benchmark:
         elif scenario in ("Quick Inference", "Long Context", "Batch Throughput"):
             for precision in _allowed:
                 with st.spinner(f"⏳ {selected_model} @ {precision} — loading + generate…"):
+                    # Free the previous precision BEFORE loading this one — never
+                    # hold two models on a unified pool.
+                    release_retained()
                     inf = LLMInference(selected_model, precision)
                     try:
                         if inf.load_model():
