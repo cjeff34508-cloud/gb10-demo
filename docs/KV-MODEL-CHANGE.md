@@ -110,3 +110,43 @@ target model and only transfers it across hardware by bandwidth ratio. Making
 that model-relative needs a measured anchor on the sparse side, which is what
 the vLLM re-capture adds. Deliberately separate so the two effects stay
 attributable.
+
+## Addendum — 2026 models are hybrids, and it dominates the KV term
+
+Adding the six models the box actually serves surfaced something the formula
+had to grow a field for. **Every one of the four newest models caches KV on
+only a minority of its layers**, read from each checkpoint's own config:
+
+| Model | layers | layers that grow KV | other layers | KV/token @fp8 |
+|---|---|---|---|---|
+| Nemotron-3.5-Lightning-30B-A3B | 52 | **6** attention | 23 mamba + 23 moe | 3.0 KiB |
+| Qwen3.6-35B-A3B | 40 | **10** full_attention | 30 linear_attention | 10.0 KiB |
+| Laguna-S-2.1 | 48 | **12** full_attention | 36 sliding_attention | 24.0 KiB |
+| Qwen3.8-27B | 64 | **16** full_attention | 48 linear_attention | 32.0 KiB |
+
+`MODEL_ARCH` therefore carries an optional `attn_layers` which overrides
+`layers` for the KV term. Without it the formula would over-state these four by
+8.7x, 4.0x, 4.0x and 4.0x — the same class of error it was written to fix.
+
+Two notes on what is deliberately not modelled:
+
+* **Mamba layers** carry a constant-size SSM state rather than a per-token
+  cache. It does not grow with context, so it is not a per-token term.
+* **Sliding-window layers** cache a bounded window. Laguna's 36 SWA layers add
+  a context-independent term, so its short-context KV is understated here while
+  its long-context KV is right — the case capacity planning actually asks about.
+
+### This is also the second calibration point
+
+The formula now reproduces both KV figures measured on this box, and assertion
+12 pins them:
+
+| Model | attn layers | formula @fp8 | measured on box |
+|---|---|---|---|
+| Qwen3-Coder-30B-A3B | 48 of 48 | 48.0 KiB/token | 48.0 KiB/token (qwen-hermes) |
+| Qwen3.6-35B-A3B | 10 of 40 | 10.0 KiB/token | ~10 KiB/token (gb10-markets) |
+
+As an independent check, the markets model's 8 GiB KV pool implies 838,861
+tokens analytically; vLLM reported 722,396 usable, i.e. **86%** of analytic,
+the remainder being paged-attention block overhead. That is the right direction
+and the right order of magnitude for a model that claims nothing about overhead.

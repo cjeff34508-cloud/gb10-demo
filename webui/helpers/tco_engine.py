@@ -838,6 +838,21 @@ MODEL_CATALOG: dict[str, dict] = {
     "Qwen2.5-32B":              {"params_b":   32.0, "category": "LLM",  "type": "decoder"},
     "Qwen3-32B":                {"params_b":   32.0, "category": "LLM",  "type": "decoder"},
     "Mixtral-8x7B":             {"params_b":   46.7, "category": "LLM",  "type": "moe", "active_b": 12.9},
+    # --- 2026 models this box actually serves (C2, 2026-11-05). Arch figures
+    # below are read from each checkpoint's own config.json, not published specs.
+    "Qwen3.6-35B-A3B":          {"params_b":   35.0, "category": "LLM",  "type": "moe", "active_b":  3.0,
+                                 "precisions": ["FP8", "FP4"], "native": "FP8"},
+    "Nemotron-3.5-Lightning-30B-A3B": {"params_b": 30.0, "category": "LLM", "type": "moe", "active_b": 3.0,
+                                 "precisions": ["FP4"], "native": "FP4"},
+    "Qwen3.8-27B":              {"params_b":   27.0, "category": "LLM",  "type": "decoder",
+                                 "precisions": ["FP8", "FP4"], "native": "FP8"},
+    "Gemma-4-26B-A4B":          {"params_b":   26.0, "category": "LLM",  "type": "moe", "active_b":  4.0,
+                                 "precisions": ["FP4"], "native": "FP4"},
+    # Laguna is a MIXED-precision checkpoint: only the MoE expert projections
+    # are NVFP4 (~57% stays BF16), so the measured on-disk size is 92.9 GiB,
+    # not the 59 GB a flat 0.5 B/param implies. Capacity here is optimistic.
+    "Laguna-S-2.1":             {"params_b":  118.0, "category": "LLM",  "type": "moe", "active_b":  8.0,
+                                 "precisions": ["FP4"], "native": "FP4"},
     # Extra-large (need multi-GPU or large HW)
     "Llama-3.3-70B":            {"params_b":   70.0, "category": "LLM",  "type": "decoder"},
     "Qwen2.5-72B":              {"params_b":   72.0, "category": "LLM",  "type": "decoder"},
@@ -920,6 +935,18 @@ MODEL_ARCH: dict[str, dict] = {
     "Qwen2.5-32B":           {"layers": 64,  "q_heads": 40,  "kv_heads": 8,  "hidden": 5120,  "ctx": 131072, "attn": "GQA"},
     "Qwen3-32B":             {"layers": 64,  "q_heads": 64,  "kv_heads": 8,  "hidden": 5120,  "ctx": 131072, "attn": "GQA"},
     "Mixtral-8x7B":          {"layers": 32,  "q_heads": 32,  "kv_heads": 8,  "hidden": 4096,  "ctx": 32768,  "attn": "GQA", "swa": True, "experts": 8, "topk": 2},
+    # 2026 hybrids: only SOME layers hold a context-growing KV cache. Counts below
+    # are from each config.json's own `layer_types`, not published specs.
+    # Qwen3.6: 10 full_attention of 40 (30 linear_attention) -> 10.0 KiB/tok @fp8,
+    # which is exactly the "~10 KiB/tok" measured for this model on this box.
+    "Qwen3.6-35B-A3B":       {"layers": 40,  "attn_layers": 10, "q_heads": 16,  "kv_heads": 2,  "hidden": 2048,  "head_dim": 256, "ctx": 262144,  "attn": "GQA (hybrid linear)", "experts": 256, "topk": 8},
+    "Nemotron-3.5-Lightning-30B-A3B": {"layers": 52, "attn_layers": 6, "q_heads": 32, "kv_heads": 2, "hidden": 2688, "head_dim": 128, "ctx": 1048576, "attn": "GQA (hybrid Mamba)", "experts": 128, "topk": 6},
+    "Qwen3.8-27B":           {"layers": 64,  "attn_layers": 16, "q_heads": 24,  "kv_heads": 4,  "hidden": 5120,  "head_dim": 256, "ctx": 262144,  "attn": "GQA (hybrid linear)"},   # 16 full of 64
+    # Laguna: 12 full_attention + 36 sliding_attention of 48. Only the 12 full
+    # layers grow with context; the 36 sliding layers cache a bounded window, a
+    # context-INDEPENDENT term that is not modelled (so short-context KV here is
+    # understated, long-context is right — the case capacity planning cares about).
+    "Laguna-S-2.1":          {"layers": 48,  "attn_layers": 12, "q_heads": 48,  "kv_heads": 8,  "hidden": 3072,  "head_dim": 128, "ctx": 1048576, "attn": "GQA (12 full + 36 SWA)", "swa": True, "experts": 256, "topk": 10},
     "Llama-3.3-70B":         {"layers": 80,  "q_heads": 64,  "kv_heads": 8,  "hidden": 8192,  "ctx": 131072, "attn": "GQA"},
     "Qwen2.5-72B":           {"layers": 80,  "q_heads": 64,  "kv_heads": 8,  "hidden": 8192,  "ctx": 131072, "attn": "GQA"},
     "Command-R+ (104B)":     {"layers": 64,  "q_heads": 96,  "kv_heads": 8,  "hidden": 12288, "ctx": 131072, "attn": "GQA"},
@@ -1285,7 +1312,13 @@ def kv_bytes_per_token(model_name: str, kv_dtype: str = "FP16") -> float | None:
     if not arch:
         return None
     nbytes = _KV_DTYPE_BYTES.get(kv_dtype.upper(), 2.0)
-    layers = arch.get("layers")
+    # Hybrid Mamba-Transformer models (NemotronH) only cache KV on their
+    # ATTENTION layers. Nemotron-3.5-Lightning-30B-A3B is 52 layers of which
+    # just 6 are attention (23 mamba + 23 moe), so billing all 52 would
+    # over-state its KV by 8.7x. `attn_layers` overrides `layers` for KV.
+    # Mamba layers carry a constant-size SSM state instead, which does NOT
+    # grow with context and so is not a per-token term; it is not modelled.
+    layers = arch.get("attn_layers") or arch.get("layers")
     if not layers:
         return None
     # MLA: a single compressed latent per layer, not per-head K and V.

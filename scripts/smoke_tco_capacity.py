@@ -25,6 +25,9 @@ Assertions
  10. Capacity     — weights_once still scales with TOTAL params, never active_b.
  11. MLA KV       — an MLA model's KV/session is below a GQA model of equal depth.
                     REGRESSION TEST: red before the C3 fix.
+ 12. Calibration  — the KV formula reproduces the two KV figures MEASURED on
+                    this box: 48.0 KiB/tok (Qwen3-Coder-30B-A3B) and 10.0
+                    KiB/tok (Qwen3.6-35B-A3B), both at fp8.
 """
 from __future__ import annotations
 import argparse
@@ -402,6 +405,49 @@ def a11_mla_cheaper_than_gqa(report):
            f"MLA KV/session {mla:.3f} GB < GQA {gqa:.3f} GB at equal depth")
 
 
+
+def a12_kv_matches_box_measurements(report):
+    """The KV formula must reproduce the two KV figures measured on this box.
+
+    This is the calibration test. The relational assertions (8-11) prove the
+    model has the right SHAPE; only these two numbers prove it has the right
+    SCALE, and they are the only KV measurements anyone has taken here.
+
+      * Qwen3-Coder-30B-A3B @ --kv-cache-dtype fp8 -> 48.0 KiB/token.
+        qwen-hermes recorded "predicted 48.0 KB/token == observed".
+      * Qwen3.6-35B-A3B @ fp8 -> 10.0 KiB/token, the figure gb10-markets
+        recorded for the model it serves on :8504.
+
+    Both are hybrids, so both also pin `attn_layers`: using the full layer
+    count instead would give 96.0 and 40.0 KiB/token respectively.
+    """
+    from helpers.tco_engine import kv_bytes_per_token
+    bad = []
+
+    # Qwen3-Coder-30B-A3B is not in the catalog; probe its real shape directly
+    # (48 layers all full-attention, 4 kv_heads, head_dim 128).
+    with _synthetic_models():
+        MODEL_ARCH["__T-coder30b"] = {"layers": 48, "q_heads": 32, "kv_heads": 4,
+                                      "hidden": 2048, "head_dim": 128, "attn": "GQA"}
+        MODEL_CATALOG["__T-coder30b"] = {"params_b": 30.0, "category": "LLM",
+                                         "type": "moe", "active_b": 3.0}
+        got = kv_bytes_per_token("__T-coder30b", "FP8")
+        MODEL_ARCH.pop("__T-coder30b", None)
+        MODEL_CATALOG.pop("__T-coder30b", None)
+    if got is None or not _close(got / 1024.0, 48.0, tol=0.01):
+        bad.append(f"Qwen3-Coder-30B-A3B shape @fp8: {(got or 0)/1024:.1f} KiB/tok, measured 48.0")
+
+    got = kv_bytes_per_token("Qwen3.6-35B-A3B", "FP8")
+    if got is None or not _close(got / 1024.0, 10.0, tol=0.01):
+        bad.append(f"Qwen3.6-35B-A3B @fp8: {(got or 0)/1024:.1f} KiB/tok, measured 10.0 "
+                   f"(40 layers but only 10 are full_attention — check attn_layers)")
+
+    if bad:
+        raise Fail("KV formula no longer matches on-box measurements:\n  " + "\n  ".join(bad))
+    report("12 kv-calibration", True,
+           "reproduces both measured figures: 48.0 and 10.0 KiB/token @fp8")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--generate", action="store_true", help="(re)write golden baseline")
@@ -418,7 +464,8 @@ def main():
     passed = failed = skipped = 0
     for fn in (a1_backcompat, a2_ordering, a3_cost, a4_monotonic, a5_captures, a6_edges,
                a7_toggle, a8_kv_expert_independent, a9_kv_linear_in_context,
-               a10_capacity_uses_total, a11_mla_cheaper_than_gqa):
+               a10_capacity_uses_total, a11_mla_cheaper_than_gqa,
+               a12_kv_matches_box_measurements):
         try:
             fn(report)
         except Fail as e:
