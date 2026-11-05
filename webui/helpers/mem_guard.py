@@ -18,6 +18,23 @@ _BYTES_PER_PARAM: dict[str, float] = {
 # Known model param counts (B) — keyed by lowercase substring of model name
 _MODEL_PARAMS_B: list[tuple[str, float]] = [
     # LLM — specific first, then generic size suffixes
+    # --- 2026 catalog (C2, 2026-11-05). Explicit entries, because the generic
+     # suffix fallback below is substring-based and gets these badly wrong:
+    # "qwen3.8-27b" matches "7b" (27 -> 7B) and "laguna"/"120b" match nothing
+    # at all, falling through to the 7.0 default. A 118B checkpoint reported as
+    # 7B passes the fits-in-memory check and the UI then tries to load it,
+    # which is exactly the unified-memory over-commit that hung the box on
+    # 2026-06-30. Keep these FIRST.
+    ("laguna-s-2.1",                118.0),  # 92.9 GiB on disk (mixed NVFP4/BF16)
+    ("laguna",                      118.0),
+    ("nemotron-3-super-120b",       120.0),
+    ("nemotron-3.5-super-vl-120b",  120.0),
+    ("nemotron-3.5-bolt-74b",        74.0),
+    ("nemotron-3.5-bolt-e4b",         4.0),
+    ("nemotron-3.5-lightning-30b",   30.0),
+    ("gemma-4-26b",                  26.0),
+    ("qwen3.6-35b-a3b",              35.0),
+    ("qwen3.8-27b",                  27.0),
     ("mixtral-8x7b",  46.7),   # full weight load despite MoE routing
     ("mixtral",       46.7),
     ("tinyllama-1.1b", 1.1),
@@ -42,7 +59,8 @@ _MODEL_PARAMS_B: list[tuple[str, float]] = [
     ("dino-vits16",    0.021),
     # Generic size suffixes (last resort) — larger/longer keys first so e.g.
     # "35b" matches before "3b" (which also appears in "...-a3b").
-    ("72b", 72.0), ("70b", 70.0), ("35b", 35.0), ("32b", 32.0),
+    ("120b", 120.0), ("118b", 118.0), ("74b", 74.0), ("72b", 72.0),
+    ("70b", 70.0), ("35b", 35.0), ("32b", 32.0), ("27b", 27.0), ("26b", 26.0),
     ("30b", 30.0), ("14b", 14.0), ("13b", 13.0), ("8b",   8.0),
     ("7b",   7.0), ("3b",   3.0), ("1.5b",  1.5),
     ("1.1b", 1.1), ("1b",   1.0),
