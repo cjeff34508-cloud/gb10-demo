@@ -548,17 +548,46 @@ elif scenario == "Memory Pressure":
     _blocked, _allowed = [], list(precisions)  # memory pressure intentionally fills; no pre-check
 
 elif scenario == "Vision Throughput":
-    vision_models = [
-        "openai/clip-vit-base-patch32",
-        "openai/clip-vit-large-patch14",
-        "google/vit-base-patch16-224",
-        "facebook/dino-vits16",
-        "microsoft/resnet-50",
-        "google/efficientnet-b4",
-    ]
+    # Two different things live in this track and conflating them was the old
+    # defect. CLIP/ViT/DINO/ResNet are vision ENCODERS: image -> vector, measured
+    # in images/sec on synthetic pixels. A vision-LANGUAGE model takes image +
+    # prompt and writes TEXT — what customers mean by "VLM". The list is read
+    # from config/model-lists.json and filtered to what is on disk.
+    from helpers.vision_inference import is_vision_language_model as _is_vlm
+    from helpers.vision_inference import _local_path as _vpath
+    try:
+        _vcat = json.loads(
+            (Path.home() / "gb10-demo" / "config" / "model-lists.json").read_text()
+        )
+    except Exception:
+        _vcat = {}
+    vision_models = [m for m in (_vcat.get("vlm", []) + _vcat.get("cnn", []))
+                     if _vpath(m) != m]
+    if not vision_models:
+        st.sidebar.error("No vision checkpoints found under models/.")
+        st.stop()
     selected_model = st.sidebar.selectbox("Model", vision_models)
+    _sel_is_vlm = _is_vlm(_vpath(selected_model))
+    if _sel_is_vlm:
+        st.sidebar.success("🖼️→📝 Vision-language model: reads the image and writes text.")
+        vlm_prompt = st.sidebar.text_area(
+            "Prompt about the image",
+            value=("This is a bar chart. Which bar is tallest, and what is its "
+                   "numeric value? Answer with the label and the number."),
+            height=96,
+            help="The answer is shown with the result, so a claim about the image "
+                 "can be checked against the figures the fixture was drawn from.",
+        )
+        vlm_max_new = st.sidebar.slider("Max new tokens", 32, 256, 96, step=32)
+    else:
+        st.sidebar.caption("Vision ENCODER: image → vector. Measures images/sec on "
+                           "synthetic pixels; it cannot answer questions about an image.")
+        vlm_prompt, vlm_max_new = "", 96
     precision_opts = ["FP32", "FP16", "BF16", "INT8", "FP4", "NVFP4"]
-    precisions = st.sidebar.multiselect("Precisions", precision_opts, default=["FP32", "FP16"])
+    _pdef = ["FP8"] if _sel_is_vlm else ["FP32", "FP16"]
+    if _sel_is_vlm and "FP8" not in precision_opts:
+        precision_opts = ["FP8"] + precision_opts
+    precisions = st.sidebar.multiselect("Precisions", precision_opts, default=_pdef)
     batch_size = st.sidebar.number_input(
         "Batch size", min_value=1, max_value=2048, value=8, step=8,
         help="Large batches stress VRAM — try 128+ on the Dell Pro Max GB10"
@@ -938,7 +967,34 @@ with tab_benchmark:
                     inf = VisionModelInference(selected_model, precision)
                     try:
                         if inf.load_model():
-                            m = inf.benchmark(num_runs=num_runs, batch_size=batch_size)
+                            if getattr(inf, "is_vlm", False):
+                                from PIL import Image
+                                _fx = (Path.home() / "gb10-demo" / "webui" / "assets"
+                                       / "fixture-chart.png")
+                                _img = Image.open(_fx).convert("RGB") if _fx.exists() else None
+                                if _img is None:
+                                    st.error("fixture-chart.png missing — run "
+                                             "scripts/make_chart_fixture.py")
+                                    continue
+                                m = inf.benchmark_vlm(_img, vlm_prompt, num_runs=1,
+                                                      max_new_tokens=vlm_max_new)
+                                if not m.error:
+                                    _ans = (m.business_output or {}).get("answer", "")
+                                    st.image(str(_fx), caption="Input image (fixture)", width=380)
+                                    st.markdown(f"**Model's answer:** {_ans}")
+                                    _t = (Path(str(_fx)).with_suffix(".truth.json"))
+                                    if _t.exists():
+                                        _tr = json.loads(_t.read_text())
+                                        _want = f"{_tr['tallest_value']:.1f}"
+                                        if _want in _ans or f"{_tr['tallest_value']:.0f}" in _ans:
+                                            st.success(f"✓ Correct — the tallest bar really is "
+                                                       f"{_tr['tallest_label']} at {_want}")
+                                        else:
+                                            st.warning(f"⚠ Expected {_want} "
+                                                       f"({_tr['tallest_label']}) — the answer "
+                                                       f"above does not contain it")
+                            else:
+                                m = inf.benchmark(num_runs=num_runs, batch_size=batch_size)
                             results.append(m)
                             if m.error:
                                 st.error(f"✗ {precision}: {m.error}")
