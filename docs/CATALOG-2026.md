@@ -759,3 +759,33 @@ assertion 5's `[0.5, 2.0]x` band. **Left at 0.9 on purpose**: a lower exponent
 under-states aggregate throughput, and under-claiming capacity is the safe
 direction for a number a customer may provision against. The measurement is
 recorded here so raising it later is a decision with evidence rather than a tweak.
+
+## C5 outcome — 2 of 4 arms, and a guard flaw found
+
+| capture | precision | levels | n=1 | peak aggregate | KV |
+|---|---|---|---|---|---|
+| qwen2.5-7b | BF16 | 6 | 13.1 | 399.5 | 62% |
+| qwen3-8b-nvfp4 | NVFP4 | **4** | 38.8 | **320.7** | 89% |
+| qwen3.6-35b-a3b-fp8 | FP8 | **1** | **50.8** | 50.8 | 100% |
+
+**The 8B re-capture is the clean win**: monotonic, 4 levels, stopped at the
+ceiling instead of running into it.
+
+**The 35B produced only a single point, and that exposed a flaw in the ceiling I
+had just added.** `vllm:kv_cache_usage_perc` reported **100% at n=1**. On a
+hybrid linear/full-attention model vLLM **pre-allocates** per-seat state, so the
+metric reflects pool *allocated*, not pool *under pressure* — and the guard
+stopped the sweep after one level, producing no scaling curve. A ceiling that can
+end a sweep before it begins is worse than no ceiling. Fixed: the ceiling is only
+honoured after at least 3 levels.
+
+The single point is still worth keeping: **50.8 tok/s single-stream** against the
+**53.8 tok/s** gb10-markets recorded for the same model without MTP — an
+independent cross-check within 6%.
+
+**Not captured:** the MTP arm and Nemotron-3.5-Lightning. Both need a re-run with
+the fixed guard, and the 35B arms additionally need a larger `--kv-cache-memory`
+or fewer seats so the pool is not saturated by pre-allocation. `$/MTok` therefore
+remains single-anchored, and the deferred `active_b` decode term still has no MoE
+scaling curve to calibrate against — that is the one plan item C5 has not
+delivered.

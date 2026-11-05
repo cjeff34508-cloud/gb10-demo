@@ -189,7 +189,14 @@ async def capture(args, urls, model):
             # throughput scales — which is the thing this reference calibrates.
             # The 2026-07 capture ran to kv=0.98 and produced a non-monotonic
             # point (n=8: 24.3 tok/s/user vs n=16: 37.1), which is why this stops.
-            if args.kv_max and row["kv_cache_pct"] >= args.kv_max:
+            # Require a few levels before honouring the ceiling. On a hybrid
+            # linear/full-attention model vLLM PRE-ALLOCATES per-seat state, so
+            # kv_cache_usage_perc can read 100% at n=1 — allocated, not under
+            # pressure. Measured 2026-11-05: Qwen3.6-35B-A3B reported kv=100% on
+            # the very first level, which stopped the sweep after one point and
+            # produced no scaling curve at all. A ceiling that can end a sweep
+            # before it starts is worse than no ceiling.
+            if args.kv_max and len(per_n) >= 3 and row["kv_cache_pct"] >= args.kv_max:
                 print(f"    ⏹ stopping sweep: KV {row['kv_cache_pct']*100:.0f}% "
                       f"≥ {args.kv_max*100:.0f}% ceiling — higher concurrency would "
                       f"measure cache pressure, not scaling", flush=True)
