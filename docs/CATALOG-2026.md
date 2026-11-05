@@ -402,3 +402,75 @@ variant, which is a different system and is not in this catalog.
 GPUs/CPUs (72 Blackwell Ultra / 36 Grace vs 72 Rubin / 36 Vera), CPU cores
 (72 vs 88 per CPU), and process node (TSMC N4 vs 3nm) were absent from the
 catalog and are now in both `notes` strings.
+
+---
+
+# "Memory is not free" on the Benchmark tab — 2026-11-05
+
+## Cause: my own downloads, not a real shortage
+
+`llm_inference.py:134` guards every load against
+`torch.cuda.mem_get_info()[0]`, which on this unified-memory box reports
+**MemFree, not MemAvailable**. After the 198 GB of C0 downloads, ~98 GiB sat in
+**reclaimable page cache**, so the guard saw 12.8 GiB free on a box with
+113.6 GiB available and refused anything above ~11 GB:
+
+```
+MemTotal     121.6 GiB      mem_get_info free = 12.8 GiB
+MemFree       13.3 GiB      Qwen2.5-7B  FP16 needs 17.0 GB -> BLOCKED
+MemAvailable 113.6 GiB      Qwen3.6-35B FP8  needs 42.5 GB -> BLOCKED
+Cached        98.2 GiB
+```
+
+Order confirmed: the guard (line 134) runs **before** `_warm_file_cache`
+(line 161), so per-model cache warming is not self-blocking. The cache was
+purely download residue.
+
+## Fix: `scripts/drop_model_page_cache.py`
+
+`posix_fadvise(POSIX_FADV_DONTNEED)` on every weight file under the model roots.
+It evicts only **clean** pages (read-only weights), writes nothing, loses
+nothing, and needs no root. The cache repopulates on the next read, which
+`_warm_file_cache()` does deliberately before each benchmark anyway.
+
+```
+advised 699 weight files, 715.3 GB of file data
+Cached    98.2 ->   3.4 GiB   (-94.8)
+MemFree   13.3 -> 110.6 GiB   (+97.3)
+```
+
+All ten benchmarkable precisions pass afterwards, from Llama-3.2-3B at FP16
+(7.3 GB) to Nemotron-3-Super at FP4 (72.8 GB). **Run this after any large
+model download.**
+
+## A safety gap this exposed, now fixed
+
+`mem_guard.params_b` x bytes-per-param under-stated the two mixed-precision
+NVFP4 checkpoints, because those releases quantize only the expert projections:
+
+| Model | flat estimate | measured on disk |
+|---|---|---|
+| Laguna-S-2.1 | 59.0 GB | **92.9 GiB** |
+| Nemotron-3-Super-120B | 60.0 GB | **80.4 GB** |
+
+`tco_engine` already preferred the measurement (via `disk_gb`); `mem_guard` did
+not, so the Benchmark tab would have let Laguna attempt a load believing it
+needed 65 GB. `_MEASURED_GB` now mirrors `disk_gb` and applies at FP4/NVFP4
+only — asking for BF16 on a pre-quantized checkpoint is a precision-compat
+error handled elsewhere and must not inherit the FP4 file size.
+
+Effect: **Laguna now estimates 110.1 GB and is correctly REFUSED** against the
+100 GB usable window — which matches the live box, where it needs
+`--gpu-memory-utilization 0.92` and currently fails to start. Nemotron-3-Super
+estimates 88.7 GB and passes, tightly. No change to any other model
+(Qwen2.5-7B 15.4 GB, Qwen3-8B-NVFP4 4.4 GB, Phi-4 30.9 GB all unchanged).
+
+## What was deliberately NOT changed
+
+The guard still reads `MemFree` rather than `MemAvailable`. Switching it would
+have made this symptom disappear, but it would also make the guard trust
+reclaimable memory that another allocation could claim first — and this guard
+exists because an over-commit on this box **deadlocks the kernel rather than
+raising a clean OOM** (2026-06-30, hard power reset). That is a risk decision
+with a real failure mode behind it, not a bug fix to slip in while debugging a
+benchmark, so it stays as it is pending an explicit call.

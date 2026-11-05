@@ -67,6 +67,27 @@ _MODEL_PARAMS_B: list[tuple[str, float]] = [
 ]
 
 
+# Measured on-disk checkpoint size (GB), for MIXED-precision releases where
+# params_b x bytes_per_param is wrong. NVFP4 releases commonly quantize only the
+# MoE expert projections and leave the rest BF16, so the real file is far larger
+# than params x 0.5. Under-stating the footprint is the DANGEROUS direction on a
+# 121 GB unified pool, so a measurement always wins over the flat estimate.
+# Mirrors MODEL_CATALOG["disk_gb"] in tco_engine.py — keep the two in step.
+_MEASURED_GB: list[tuple[str, float]] = [
+    ("laguna-s-2.1",           99.8),   # 92.9 GiB measured; flat FP4 estimate said 59.0
+    ("nemotron-3-super-120b",  80.4),   # measured 2026-11-05; flat FP4 estimate said 60.0
+]
+
+
+def measured_gb(model_name: str) -> float | None:
+    """Measured on-disk size (GB) for this checkpoint, or None if unmeasured."""
+    n = model_name.lower()
+    for key, val in _MEASURED_GB:
+        if key in n:
+            return val
+    return None
+
+
 def params_b(model_name: str) -> float:
     """Estimate parameter count (billions) from model name."""
     n = model_name.lower()
@@ -91,6 +112,13 @@ def estimate_model_gb(
     p      = params_b(model_name)
     bpp    = _BYTES_PER_PARAM.get(precision.split()[0].upper(), 4.0)
     raw_gb = p * bpp
+    # A measured checkpoint beats the flat bytes-per-param figure. Only applied
+    # for the quantized precisions the measurement was taken at — asking for
+    # BF16 on a pre-quantized NVFP4 release is a precision-compatibility error,
+    # handled elsewhere, and must not silently inherit the FP4 file size.
+    _m = measured_gb(model_name)
+    if _m is not None and precision.split()[0].upper() in ("FP4", "NVFP4"):
+        raw_gb = _m
 
     base_overhead    = 0.08
     batch_factor     = min(0.003 * batch_size, 0.20)
