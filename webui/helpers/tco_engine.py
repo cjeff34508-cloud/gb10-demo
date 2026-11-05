@@ -813,6 +813,50 @@ def interconnect_efficiency(sys: dict, gpus_per_model: int, nodes_per_copy: int)
     return intra_eff, inter_eff, round(intra_eff * inter_eff, 4)
 
 # ---------------------------------------------------------------------------
+# Benchmarkable models: HF repo id -> MODEL_CATALOG key
+# ---------------------------------------------------------------------------
+# The Benchmark tab speaks HF repo ids (config/model-lists.json); the TCO
+# catalog speaks short names. This map is EXPLICIT on purpose — substring
+# matching is what made mem_guard report a 118B checkpoint as 7B (see
+# docs/CATALOG-2026.md), and a wrong match here would silently cost a model
+# every TCO figure.
+#
+# A model earns a place here only if this box can actually BENCHMARK it, so a
+# TCO number for it can be grounded in a measurement rather than a projection.
+BENCHMARKABLE: dict[str, str] = {
+    "unsloth/Llama-3.2-3B-Instruct":                      "Llama-3.2-3B",
+    "Qwen/Qwen2.5-7B-Instruct":                           "Qwen2.5-7B",
+    "nvidia/Qwen3-8B-NVFP4":                              "nvidia/Qwen3-8B-NVFP4",
+    "microsoft/Phi-4":                                    "Phi-4 (14B)",
+    "Qwen/Qwen2.5-14B-Instruct":                          "Qwen2.5-14B",
+    "nvidia/Gemma-4-26B-A4B-NVFP4":                       "Gemma-4-26B-A4B",
+    "Qwen/Qwen3.8-27B-FP8":                               "Qwen3.8-27B",
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4": "Nemotron-3.5-Lightning-30B-A3B",
+    "Qwen/Qwen3.6-35B-A3B-FP8":                           "Qwen3.6-35B-A3B",
+    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4":     "Nemotron-3-Super-120B",
+    "poolside/Laguna-S-2.1-NVFP4":                        "Laguna-S-2.1",
+}
+
+
+def benchmarkable_catalog_names(hf_ids: list[str] | None = None) -> list[str]:
+    """MODEL_CATALOG keys for the models this box can benchmark.
+
+    Pass the Benchmark tab's on-disk HF id list to keep the two tabs in step, so
+    a model that is not present on disk is not offered for TCO either. Order
+    follows ``hf_ids`` (smallest-first as the catalog file is written); with no
+    argument, every mapped model is returned. Names absent from MODEL_CATALOG
+    are skipped rather than raising, so a half-added model degrades quietly.
+    """
+    ids = hf_ids if hf_ids is not None else list(BENCHMARKABLE)
+    out: list[str] = []
+    for hf in ids:
+        key = BENCHMARKABLE.get(hf)
+        if key and key in MODEL_CATALOG and key not in out:
+            out.append(key)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Extended Model Catalog (includes models too large for Dell Pro Max GB10)
 # ---------------------------------------------------------------------------
 

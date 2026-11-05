@@ -211,3 +211,61 @@ table.**
 
 Final state: LLM 11/11 on disk and offered, VLM 6/6 on disk, harness 12/12,
 app serves HTTP 200.
+
+---
+
+# TCO tab restricted to benchmarkable models — 2026-11-05
+
+The TCO "Target Model" selector offered all 38 `MODEL_CATALOG` entries, most of
+which this box cannot run. It now defaults to the **11 models present on disk**,
+so every TCO figure can be grounded in a measurement taken here rather than a
+projection. The hidden 27 entries (405B, 671B, rack-scale) stay available behind
+an explicit checkbox labelled as projection-only — deleting them outright would
+remove the "what hardware would I need for DeepSeek 671B" answer and leave the
+rack systems in `DELL_SYSTEMS` with nothing to size.
+
+`BENCHMARKABLE` in `tco_engine.py` maps HF repo id -> catalog key **explicitly**.
+Substring matching is what made `mem_guard` report a 118B checkpoint as 7B, and
+a wrong match here would silently corrupt every TCO figure for that model.
+
+The list is computed from `config/model-lists.json` filtered by on-disk presence,
+via a new module-level `_llm_catalog_ids()` helper — **not** from the sidebar's
+`llm_models`, which only exists inside the LLM-scenario branch and would have
+raised `NameError` in the TCO tab under a vision or HPC scenario.
+
+## What this unlocked, visible immediately
+
+All 11 at 8 users / 131K context on one GB10, shared-weights capacity:
+
+| Model | nodes | sessions/node | recommendation |
+|---|---|---|---|
+| Nemotron-3.5-Lightning-30B-A3B | 1 | **138** | Single-GPU |
+| Nemotron-3-Super-120B | 1 | **37** | Single-GPU |
+| Qwen3.6-35B-A3B | 1 | 33 | Single-GPU |
+| Gemma-4-26B-A4B | 1 | 21 | Single-GPU |
+| Qwen2.5-7B | 1 | 14 | Single-GPU |
+| Qwen3.8-27B | 1 | 11 | Single-GPU |
+| Llama-3.2-3B | 1 | 8 | Single-GPU |
+| nvidia/Qwen3-8B-NVFP4 | 2 | 6 | Single-GPU |
+| Phi-4 (14B) | 3 | 3 | Single-GPU |
+| Qwen2.5-14B | 3 | 3 | Single-GPU |
+| Laguna-S-2.1 | 3 | 3 | Tight Fit |
+
+A **120B** MoE serves 37 concurrent sessions on one box while a **14B** dense
+model needs three boxes to serve 3 each. Before the KV fix and the catalog
+refresh this ordering was impossible to see, because capacity tracked parameter
+count and nothing else.
+
+## Known limitation until the vLLM re-capture (C5)
+
+The `$/MTok` column reads **$0.250 for seven of the eleven models**. That is not
+a coincidence and not a bug in the capacity model — every row was computed with
+the same `gb10_tps` input (61.0, the figure measured for Qwen3.6-35B-A3B), because
+the reference capture holds only two models, both <=8B dense, from 2026-07-21.
+
+So right now: **capacity per node is per-model and correct** (it comes from
+attention geometry and measured checkpoint size), while **throughput is not
+differentiated** — it is one anchor applied to every model. C5 adds the MoE
+anchors and the MTP on/off pair; the deferred `active_b` decode term then makes
+the transfer between models honest. Until both land, read sessions/node and
+nodes as real and treat `$/MTok` as provisional.

@@ -28,6 +28,7 @@ from helpers import (
 from helpers.mem_guard import check_precisions, estimate_model_gb, GB10_USABLE_GB, GB10_RESERVE_GB
 from helpers.benchmark_utils import free_cuda_memory
 from helpers.tco_engine import (
+    benchmarkable_catalog_names,
     DELL_SYSTEMS, DEFAULT_SYSTEMS, MODEL_CATALOG, calculate_tco, best_fit_systems, format_usd,
     model_memory_gb, GB10_BW_GBS, assign_ratings, RATING_COLORS, RATING_ORDER,
     MC_PATH_PRESETS, MC_BW_EFF, calculate_tco_montecarlo,
@@ -410,6 +411,17 @@ st.sidebar.divider()
 # ---------------------------------------------------------------------------
 # Per-scenario sidebar controls
 # ---------------------------------------------------------------------------
+
+def _llm_catalog_ids() -> list[str]:
+    """HF ids from config/model-lists.json that resolve on disk, smallest-first."""
+    try:
+        ids = json.loads(
+            (Path.home() / "gb10-demo" / "config" / "model-lists.json").read_text()
+        ).get("llm", [])
+    except Exception:
+        return []
+    return [m for m in ids if _local_path(m) != m]
+
 models_dir = Path.home() / "gb10-demo" / "models"
 _incompat: dict[str, str] = {}   # precision -> reason; Not-Compatible, never run
 
@@ -2023,13 +2035,42 @@ with tab_tco:
             )
         else:
             st.markdown("**Workload Parameters**")
+            # Default to models this box can actually BENCHMARK, so every TCO figure
+            # can be grounded in a measurement taken here rather than a projection.
+            # Uses the same on-disk set the Benchmark tab offers, recomputed here
+            # because `llm_models` only exists inside the LLM-scenario sidebar branch.
+            _tco_testable = benchmarkable_catalog_names(_llm_catalog_ids())
+            _tco_show_all = st.checkbox(
+                "Include models we cannot benchmark here",
+                value=False,
+                help="Off (default): only models present on this box, so their TCO is "
+                     "anchored to a measurement. On: the full catalog, including models "
+                     "too large for one Dell Pro Max GB10 — useful for sizing rack-scale "
+                     "hardware, but those figures are PROJECTIONS with no local "
+                     "measurement behind them.",
+            )
+            if _tco_show_all or not _tco_testable:
+                _tco_opts = list(MODEL_CATALOG.keys())
+                _tco_default = ("Llama-3.3-70B" if "Llama-3.3-70B" in MODEL_CATALOG
+                                else _tco_opts[0])
+            else:
+                _tco_opts = _tco_testable
+                _tco_default = ("Qwen3.6-35B-A3B" if "Qwen3.6-35B-A3B" in _tco_opts
+                                else _tco_opts[0])
             tco_model = st.selectbox(
                 "Target Model",
-                options=list(MODEL_CATALOG.keys()),
-                index=list(MODEL_CATALOG.keys()).index("Llama-3.3-70B")
-                if "Llama-3.3-70B" in MODEL_CATALOG else 0,
-                help="Includes models too large for a single Dell Pro Max GB10 — system will auto-scale nodes.",
+                options=_tco_opts,
+                index=_tco_opts.index(_tco_default),
+                help="Models present on this box, so the TCO is grounded in a real "
+                     "benchmark. Tick the box above to include projection-only models.",
             )
+            if not _tco_show_all and _tco_testable:
+                st.caption(
+                    f"**{len(_tco_opts)} benchmarkable models.** "
+                    f"{len(MODEL_CATALOG) - len(_tco_opts)} further catalog entries "
+                    "(405B, 671B, rack-scale) are hidden — tick the box above to size "
+                    "hardware for those as projections."
+                )
             _tco_prec_opts = supported_precisions(tco_model)
             _tco_native = native_precision(tco_model)
             tco_precision = st.selectbox(
