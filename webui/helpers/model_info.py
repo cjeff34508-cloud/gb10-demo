@@ -306,7 +306,69 @@ def precision_compatible(model_name: str, precision: str) -> tuple[bool, str]:
     prequant_nvfp4 = "NVFP4" in name or "NVF4" in name
     if prequant_nvfp4 and precision.upper() not in ("FP4", "NVFP4"):
         return False, "pre-quantized NVFP4 checkpoint — only runs at FP4/NVFP4"
+
+    # A checkpoint whose quantization method transformers does not implement is
+    # WORSE than one that fails: transformers prints "Unknown quantization type
+    # ... we will skip the quantization", reinterprets the packed weights as
+    # BF16, reports a SUCCESSFUL load, and then generates garbage. Measured
+    # 2026-11-05 on nvidia/Gemma-4-26B-A4B-NVFP4 — loaded "fine" at 48.07 GiB and
+    # produced '0-1 way/radius housing t[i deる'. A benchmark would have recorded
+    # a throughput number from a broken model, which is the one outcome this
+    # suite must never produce. Refuse before loading.
+    _qm = checkpoint_quant_method(model_name)
+    if _qm and _qm not in _HF_SUPPORTED_QUANT:
+        return False, (
+            f"checkpoint is quantized with '{_qm}', which transformers "
+            f"{_tf_version()} does not implement — it would silently skip "
+            f"quantization, load as BF16 and generate garbage. This model runs "
+            f"correctly under vLLM (which is how the sibling projects serve it), "
+            f"not through the HF benchmark path."
+        )
     return True, ""
+
+
+# Quantization methods the installed transformers can actually honour. Anything
+# else is refused above rather than silently mis-loaded. 'fp8' and
+# 'compressed-tensors' are implemented; NVIDIA ModelOpt ('modelopt',
+# 'modelopt_mixed') is not, as of transformers 5.5.4.
+_HF_SUPPORTED_QUANT = {
+    "compressed-tensors", "fp8", "torchao", "bitsandbytes_4bit",
+    "bitsandbytes_8bit", "awq", "gptq", "mxfp4", "quark", "fbgemm_fp8",
+    "hqq", "quanto", "bitnet", "eetq", "aqlm", "higgs", "vptq", "spqr",
+    "auto-round", "fp_quant", "sinq", "metal", "fouroversix",
+}
+
+
+def _tf_version() -> str:
+    try:
+        import transformers
+        return transformers.__version__
+    except Exception:
+        return "(unknown)"
+
+
+def checkpoint_quant_method(model_name: str) -> str | None:
+    """`quant_method` declared by a local checkpoint's config.json, or None.
+
+    Reads the file directly rather than via AutoConfig: this runs inside the
+    pre-load guard, so it must be cheap and must not import the model's remote
+    code.
+    """
+    import json
+    from pathlib import Path
+    slug = (model_name or "").replace("/", "--")
+    base = Path.home() / "gb10-demo" / "models"
+    for sub in ("llm-models", "vlm-models", "narrator-models"):
+        cfg = base / sub / slug / "config.json"
+        if not cfg.exists():
+            continue
+        try:
+            c = json.loads(cfg.read_text())
+        except Exception:
+            return None
+        q = c.get("quantization_config") or (c.get("text_config") or {}).get("quantization_config")
+        return (q or {}).get("quant_method")
+    return None
 
 
 def lookup_model_info(name: str) -> dict | None:

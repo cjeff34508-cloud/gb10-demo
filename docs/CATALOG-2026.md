@@ -604,3 +604,77 @@ on which cloud model is a fair substitute.
 Omissions are listed on both sides so neither looks accidentally clean —
 on-prem: staff, floor space, cooling beyond rack power, CapEx opportunity cost,
 and any duty cycle below 100%; cloud: cache reads and the 50% batch discount.
+
+---
+
+# NVFP4 "failed to load" — ModelOpt checkpoints are not HF-loadable — 2026-11-05
+
+## What was actually wrong, and it was mine
+
+Three of the six models I added this morning **cannot be benchmarked through the
+HF path at all**, and I added them without verifying a load. Worse than failing,
+one of them *succeeded* and produced nonsense.
+
+`transformers 5.5.4` implements `compressed-tensors`, `fp8`, `torchao`, `mxfp4`
+and ~18 others — but **not NVIDIA ModelOpt**. Given a `modelopt` checkpoint it
+prints *"Unknown quantization type, got modelopt … Hence, we will skip the
+quantization"*, reinterprets the packed uint8 weights as BF16, and carries on.
+
+Measured on `nvidia/Gemma-4-26B-A4B-NVFP4`:
+
+```
+load_ok   = True
+resident  = 48.07 GiB          (a 18.8 GB checkpoint)
+dtypes    = {bfloat16: 426}    (packed weights reinterpreted)
+generated = '0-1 way/radius housing t[i deる'
+```
+
+**A successful-looking load, 48 GB of memory, and garbage output.** A benchmark
+would have recorded a throughput figure from a broken model — the one result
+this suite must never produce.
+
+`Nemotron-3.5-Lightning` and `Nemotron-3-Super-120B` fail more honestly: the
+shapes don't match and the load raises `ignore_mismatched_sizes`, which is the
+"NVFP4 failed to load" that was reported.
+
+## Audit of every quantized checkpoint
+
+| Checkpoint | quant_method | HF |
+|---|---|---|
+| Qwen3.6-35B-A3B-FP8 | `fp8` | ok |
+| Qwen3.8-27B-FP8 | `fp8` | ok |
+| Qwen3-8B-NVFP4 | `compressed-tensors` | ok |
+| Laguna-S-2.1-NVFP4 | `compressed-tensors` | ok (refused on memory: 110 GB) |
+| Gemma-4-26B-A4B-NVFP4 | **`modelopt`** | **silently wrong** |
+| Nemotron-3.5-Lightning-30B-A3B | **`modelopt`** | **raises** |
+| Nemotron-3-Super-120B-A12B | **`modelopt`** | **raises** |
+| Nemotron-3.5-Bolt-74B-A9B | **`modelopt`** | **unsupported** |
+| Nemotron-3.5-Super-VL-120B-A12B | **`modelopt_mixed`** | **unsupported** |
+
+## Fix: refuse before loading, and say why
+
+`precision_compatible()` now reads the checkpoint's declared `quant_method` from
+`config.json` (cheaply, without importing remote code) and refuses anything the
+installed transformers cannot honour, reusing the existing **Not Compatible**
+treatment rather than inventing a new failure mode:
+
+> ⛔ checkpoint is quantized with 'modelopt', which transformers 5.5.4 does not
+> implement — it would silently skip quantization, load as BF16 and generate
+> garbage. This model runs correctly under vLLM (which is how the sibling
+> projects serve it), not through the HF benchmark path.
+
+Verified: Gemma-4 is now refused **before** any load; `Qwen3-8B-NVFP4` still
+loads packed at 5.96 GiB and generates coherently.
+
+## Correcting an earlier claim
+
+I previously reported that "all ten benchmarkable precisions pass". That was
+wrong. It tested only the **memory guard**, not a load. Five of eleven LLM
+entries do not run through HF: three ModelOpt refusals, plus Laguna refused on
+memory. The honest benchmarkable set is **Llama-3.2-3B, Qwen2.5-7B,
+Qwen3-8B-NVFP4, Phi-4, Qwen2.5-14B, Qwen3.8-27B-FP8 and Qwen3.6-35B-A3B-FP8**.
+
+The ModelOpt models stay in the catalog deliberately: they are real, on disk,
+correct in the TCO model, and they run under vLLM — which turns a dead end into
+the point. "Our benchmark harness can't run this; the serving stack we actually
+deploy can" is the vLLM-vs-HF story the honesty rework already tells about FP4.
