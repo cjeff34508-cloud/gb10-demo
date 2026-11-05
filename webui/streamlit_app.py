@@ -37,7 +37,7 @@ from helpers.tco_engine import (
 )
 from helpers.model_info import lookup_model_info, designed_precision, precision_compatible
 from helpers.on_device_ai import narrator_available, make_narrator, NARRATOR_MODEL, NARRATOR_PRECISION
-from helpers.cloud_pricing import api_token_costs, api_comparison_band
+from helpers.cloud_pricing import api_token_costs, api_comparison_band, STANCE_LABEL
 from helpers.vllm_reference import load_vllm_reference, has_real_fp4
 
 # Official Dell Technologies logo, embedded as a data URI (Streamlit doesn't serve
@@ -2621,6 +2621,9 @@ with tab_tco:
                 f"**$/1M output tok** loads the proportional input, so it compares directly to the "
                 f"best on-prem option (**{_best_name}: {_best_mtok} per 1M output tok**)."
             )
+            # The stance is never implicit. A comparison that leans one way and
+            # does not say so is the same failure as an unlabelled projection.
+            st.warning(f"**Assumption stance — {STANCE_LABEL}**", icon="⚖️")
 
             # Headline hosted-API price point + a low/high band around it.
             _pt, _lo, _hi = _band.get("point"), _band.get("low"), _band.get("high")

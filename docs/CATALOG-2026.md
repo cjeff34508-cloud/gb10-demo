@@ -76,3 +76,76 @@ returned **fits=True** for a 92.9 GiB checkpoint, so the UI would have
 attempted the load and over-committed the unified pool — the same failure that
 hard-hung this box on 2026-06-30. Fixed with explicit entries ahead of the
 generic suffixes; Laguna now estimates 260.3 GB and is refused.
+
+---
+
+# Cloud pricing refresh — 2026-11-05
+
+## What was wrong
+
+Every Claude price in `cloud_pricing.py` was **correct for the model it named** —
+Opus 4.8 $5/$25, Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5 all verified. The problem was
+that the models were a generation behind, and the current generation is *cheaper*:
+
+| Was quoted | $/1M | Current equivalent | $/1M | Delta |
+|---|---|---|---|---|
+| Claude Opus 4.8 | 5.00 / 25.00 | Claude Opus 5.5 | **4.00 / 20.00** | 20% cheaper |
+| Claude Sonnet 4.6 | 3.00 / 15.00 | Claude Sonnet 5.5 | **2.00 / 10.00** | 33% cheaper |
+| Claude Haiku 4.5 | 1.00 / 5.00 | Claude Haiku 5.5 | **0.10 / 0.50** | **10x cheaper** |
+| — | — | Claude Fable 5.1 | 10.00 / 50.00 | no row existed |
+
+So the table overstated hosted-API cost — which flattered on-prem by accident.
+That is the same failure mode as an unlabelled projection: a number that leans
+one way without saying so.
+
+## The stance, stated
+
+The comparison is now **deliberately conservative toward on-prem, and says so on
+screen** (`STANCE_LABEL`, rendered as a warning banner above the comparison).
+Four levers, all of them real published pricing structure:
+
+1. **Long-context tiers applied.** Claude Haiku 5.5 is 5x above a 100K prompt;
+   Gemini 3.1 Pro is ~2x above 200K. The TCO tab **defaults to 131,072 context**
+   and goes to 524,288, so the higher tier is the normal case here, not an edge
+   case. The previous module ignored tiers entirely and therefore understated
+   cloud cost at every default setting — this lever makes it *more accurate* and
+   higher at the same time.
+2. **Thinking tokens billed as output.** Adaptive thinking is on by default on
+   every current model, so a reasoning workload is billed for more output than it
+   returns. `THINKING_OUTPUT_MULTIPLIER = 1.5` is the **only estimated input in
+   the module** and is labelled as an assumption, not a measurement; set it to
+   1.0 for a thinking-free workload.
+3. **Frontier-class price point.** `CLOUD_ANCHORS` moved from
+   `point = Gemini 3.5 Flash` / `high = Claude Sonnet 4.6` (Sonnet is mid-tier,
+   mislabelled "frontier") to `point = Claude Opus 5.5` / `high = Claude Fable 5.1`,
+   with `low = Claude Haiku 5.5` keeping the honest floor visible.
+4. **Cache reads and the 50% Batch discount are NOT applied.** Both are real and
+   both would lower cloud cost. Omitting them is conservative and is recorded so
+   the omission is visible rather than accidental.
+
+Effect at the default 131,072 ctx / 16,384 out: the quoted price point goes from
+**$17.00** to **$41.33 per 1M output tokens**, with a **$103.33** ceiling — every
+figure a published list price.
+
+## What was NOT done, deliberately
+
+**The stale Haiku 4.5 rate was not kept just because it was higher.** At its real
+>100K tier Haiku 5.5 costs $5.17/1M out versus the stale Haiku 4.5's $10.33 — so
+correcting it *lowered* the floor. Using a wrong number because it favours the
+conclusion is fabrication, and it is the first thing a customer's procurement
+team would catch. The stance comes from pricing structure, never from stale data.
+
+**Gemini rows were not changed.** Third-party trackers broadly agree with the
+rates already in the file (3.1 Pro $2/$12, 3.5 Flash $1.50/$9), but Google's own
+pricing page could not be reached on 2026-11-05, so every Gemini row now carries
+`verified: False` and the UI says the Gemini rates are unverified. One live risk
+is recorded: Gemini 3.8 Flash is reported to be on an introductory rate ending
+**2027-01-01**, which would silently invalidate the comparison on New Year's Day.
+
+## Also verified, not changed
+
+The box's own Claude spending is correctly priced. `second_opinion.py:23` carries
+`PRICE = {"input": 5.00, "output": 25.00}` for `claude-opus-5`, which matches the
+first-party rate; the four logged second opinions ($0.065-$0.09) are accurate.
+Moving that path to `claude-opus-5-5` would cut it ~20% and require the constant
+to become 4.00/20.00.
