@@ -558,3 +558,49 @@ Narration quality now varies with whatever was last benchmarked. A 3B at FP16
 writes differently from a 35B MoE, and a weaker model may hedge more. The
 numbers it is given are always the measured ones, and the guard above stops it
 narrating with none.
+
+---
+
+# Cloud panel: hosted-options table removed, on-prem comparison added — 2026-11-05
+
+**Removed** the "All hosted options for reference" caption and its 12-row
+dataframe. The low/price-point/high band above it already carries the range, and
+the full table invited reading a cheap Gemini tier as the comparison basis.
+`_api_costs` is still computed — the narrator's `cloud_comparison()` uses it.
+
+**Fixed a stale caption** found while editing: the footer still read
+*"Low = Gemini 2.5 Flash · price point = Gemini 3.5 Flash · high = Claude Sonnet
+4.6"* — the anchors before the pricing refresh moved them to Haiku 5.5 / Opus 5.5
+/ Fable 5.1. It directly contradicted the table above it. It is now **generated
+from `CLOUD_ANCHORS`**, so it cannot drift again, and it names which providers
+are unverified.
+
+**Added the comparison that was missing.** The tab computed a cheapest on-prem
+`$/MTok` and a cloud `$/MTok` and never put them next to each other — the only
+link was a passing mention in a caption. Now: three metrics (cheapest viable
+on-prem platform, cloud price point, and the ratio) plus a verdict line.
+
+## The ratio needed qualifying, not just displaying
+
+First run produced **1,744x** (Qwen3.6-35B-A3B, 64 users, 131K ctx: $0.0237 vs
+$41.33 per 1M output tokens). That is an artefact, not a result, and quoting it
+unqualified is how a TCO deck loses the room. Two conditions produce it, so both
+are now stated **with** the number rather than in a footnote:
+
+1. **Utilisation.** The on-prem figure amortises the entire platform over the
+   full term *while serving the configured concurrency continuously*. Idle
+   hardware costs the same and produces no tokens, so the honest claim is
+   "N x cheaper **at full utilisation**, scaled by your actual duty cycle".
+2. **Capability.** The price point is a frontier model, very likely more capable
+   than the local model being costed. The panel now also shows the **low anchor
+   as the like-for-like floor** — Haiku 5.5 at $5.17/1M out, still 218x the
+   on-prem cost. Stated plainly: this compares cost per token, not capability
+   per token.
+
+For reference at that workload: low 218x · price point 1,744x · high 4,360x.
+The direction is not in doubt; the multiple depends entirely on duty cycle and
+on which cloud model is a fair substitute.
+
+Omissions are listed on both sides so neither looks accidentally clean —
+on-prem: staff, floor space, cooling beyond rack power, CapEx opportunity cost,
+and any duty cycle below 100%; cloud: cache reads and the 50% batch discount.

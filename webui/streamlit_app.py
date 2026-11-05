@@ -2766,22 +2766,93 @@ with tab_tco:
                     })
             if _band_rows:
                 st.dataframe(pd.DataFrame(_band_rows), use_container_width=True, hide_index=True)
-            st.caption("Low = Gemini 2.5 Flash · price point = Gemini 3.5 Flash · high = "
-                       "Claude Sonnet 4.6. Published standard-context list prices (2026) — "
-                       "verify before quoting. Sources: platform.claude.com, "
-                       "ai.google.dev/gemini-api/docs/pricing.")
+            # Caption is generated from CLOUD_ANCHORS, never hand-written — the
+            # previous hard-coded version still named Gemini 2.5 Flash / 3.5 Flash
+            # / Sonnet 4.6 after the anchors had moved, so it contradicted the
+            # table directly above it.
+            _anchor_txt = " · ".join(
+                f"{_lbl.lower()} = {_band[_role]['model']}"
+                for _role, _lbl in (("low", "Low"), ("point", "Price point"), ("high", "High"))
+                if _band.get(_role)
+            )
+            _unverified = sorted({c["provider"] for c in _band.values() if not c.get("verified")})
+            st.caption(
+                f"{_anchor_txt}. Claude list prices verified 2026-11-05 against the "
+                "first-party Anthropic rate table"
+                + (f"; {', '.join(_unverified)} rates UNVERIFIED — check the provider's "
+                   "pricing page before quoting." if _unverified else ".")
+            )
 
-            st.caption("All hosted options for reference:")
-            st.dataframe(pd.DataFrame([
-                {
-                    "Model":            c["model"],
-                    "Provider":         c["provider"],
-                    "$/Request":        f"${c['cost_per_request']:.5f}",
-                    "$/1M output tok":  f"${c['cost_per_mtok_out']:,.2f}",
-                    "List in/out $/1M": f"${c['in_price']:.2f} / ${c['out_price']:.2f}",
-                }
-                for c in _api_costs
-            ]), use_container_width=True, hide_index=True)
+            # ---------------------------------------------------------------
+            # On-prem vs cloud, side by side — the number the whole tab exists
+            # to produce, and it was previously only implied in a caption.
+            # ---------------------------------------------------------------
+            _cheapest = None
+            for _row in tco_rows:
+                _r = _row.get("_result")
+                if _r is None or _r.rating == "Not Viable" or not _r.cost_per_mtok:
+                    continue
+                if _cheapest is None or _r.cost_per_mtok < _cheapest[1]:
+                    _cheapest = (sys_label(_row["System"]), _r.cost_per_mtok)
+
+            if _cheapest and _pt:
+                _op_name, _op_mtok = _cheapest
+                _cl_mtok = _pt["cost_per_mtok_out"]
+                st.markdown("#### On-prem vs cloud for this workload")
+                _k1, _k2, _k3 = st.columns(3)
+                _k1.metric(f"Cheapest on-prem — {_op_name}",
+                           f"${_op_mtok:,.4f} / 1M out",
+                           help="Lowest $/1M output tokens among viable Dell platforms, "
+                                "amortised over the configured term.")
+                _k2.metric(f"Cloud price point — {_pt['model']}",
+                           f"${_cl_mtok:,.2f} / 1M out",
+                           help="The hosted-API rate this comparison quotes.")
+                if _op_mtok > 0:
+                    _ratio = _cl_mtok / _op_mtok
+                    _k3.metric("Cloud costs", f"{_ratio:,.1f}x more",
+                               delta=f"${_cl_mtok - _op_mtok:,.2f} / 1M out saved on-prem",
+                               delta_color="normal" if _ratio > 1 else "inverse",
+                               help="Ratio of the two figures left of this. Below 1.0x means "
+                                    "the hosted API is cheaper for this workload.")
+                    if _ratio > 1:
+                        # A bare "1,700x cheaper" is an artefact, not a result, and
+                        # quoting it unqualified is how a TCO deck loses the room.
+                        # Two conditions make the ratio what it is, so they are
+                        # stated WITH the number, not in a footnote.
+                        _lo_ratio = (_lo["cost_per_mtok_out"] / _op_mtok) if _lo else None
+                        st.success(
+                            f"**On-prem is {_ratio:,.0f}x cheaper per output token — at full "
+                            f"utilisation.** ${_op_mtok:,.4f} vs ${_cl_mtok:,.2f} per 1M output "
+                            f"tokens. The on-prem figure amortises the whole platform over "
+                            f"{tco_amort} years of serving **{tco_users} concurrent users "
+                            f"continuously**; idle hardware costs the same and produces no "
+                            f"tokens, so the real multiple is this one scaled by your actual "
+                            f"duty cycle."
+                        )
+                        if _lo_ratio:
+                            st.caption(
+                                f"⚖️ **Capability caveat.** The price point is "
+                                f"{_pt['model']}, a frontier model — very likely more capable "
+                                f"than {tco_model} running on-prem. A closer like-for-like "
+                                f"floor is the low anchor, {_lo['model']} at "
+                                f"${_lo['cost_per_mtok_out']:,.2f} / 1M out, which is still "
+                                f"**{_lo_ratio:,.0f}x** the on-prem cost. This panel compares "
+                                f"cost per token, not capability per token."
+                            )
+                    else:
+                        st.info(
+                            f"**The hosted API is cheaper here** — ${_cl_mtok:,.2f} vs "
+                            f"${_op_mtok:,.4f} per 1M output tokens. At this volume the "
+                            f"on-prem CapEx does not amortise down far enough; raise the "
+                            f"user count or the term to see where it crosses over."
+                        )
+                st.caption(
+                    "Deliberately NOT included on the on-prem side: staff time, floor space, "
+                    "cooling beyond rack power, the opportunity cost of the CapEx, and any "
+                    "duty cycle below 100%. Deliberately not included on the cloud side: "
+                    "cache reads and the 50% batch discount. Both omissions are stated so "
+                    "neither side looks accidentally clean."
+                )
 
     st.markdown("### 🟢 On-Device AI Analysis")
     st.caption("Generated locally on the Dell Pro Max GB10 by "
