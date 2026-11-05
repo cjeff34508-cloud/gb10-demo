@@ -18,6 +18,13 @@ Assertions
   5. Captures     — analytic shared aggregate within [0.5, 2.0]x the real GB10
                     vLLM captures (webui/data/vllm_reference.json).
   6. Edge cases   — a >1-GPU model still sizes via TP/multi-node; no div-by-zero.
+  7. Toggle       — capacity_mode actually moves platform sizing.
+  8. KV geometry  — KV/session depends on attention geometry, NOT expert count
+                    or total params. REGRESSION TEST: red before the C3 fix.
+  9. KV linear    — KV/session is linear in context and zero at zero context.
+ 10. Capacity     — weights_once still scales with TOTAL params, never active_b.
+ 11. MLA KV       — an MLA model's KV/session is below a GQA model of equal depth.
+                    REGRESSION TEST: red before the C3 fix.
 """
 from __future__ import annotations
 import argparse
@@ -259,6 +266,142 @@ def a6_edges(report):
     report("6 edges", True, "405B sizes via TP/multi-node; no NaN/inf")
 
 
+# ---------------------------------------------------------------------------
+# MoE-awareness invariants (C4). These do NOT pin numbers — they pin RELATIONS
+# that must hold whatever the KV model is, so they survive a deliberate
+# re-baseline while still catching a wrong KV model.
+#
+# a8 and a11 are REGRESSION TESTS: they fail against the weights-relative
+# `_KV_FRAC_PER_TOKEN` heuristic and pass once KV comes from attention
+# geometry. A guard that was green before the fix would not have been a guard.
+# ---------------------------------------------------------------------------
+from contextlib import contextmanager  # noqa: E402
+from helpers.tco_engine import MODEL_ARCH, session_footprint  # noqa: E402
+
+# Identical attention geometry (so identical KV), wildly different expert count
+# and therefore total parameters. 32 layers x 8 kv_heads x 4096 hidden.
+_GEOM = {"layers": 32, "q_heads": 32, "kv_heads": 8, "hidden": 4096,
+         "ctx": 131072, "attn": "GQA"}
+_SYNTH = {
+    "__T-moe-small": (
+        {"params_b": 47.0, "category": "LLM", "type": "moe", "active_b": 13.0},
+        dict(_GEOM, experts=8, topk=2),
+    ),
+    "__T-moe-huge": (   # 5x the total params, SAME attention -> SAME KV/session
+        {"params_b": 235.0, "category": "LLM", "type": "moe", "active_b": 22.0},
+        dict(_GEOM, experts=128, topk=8),
+    ),
+    "__T-dense-gqa": (
+        {"params_b": 47.0, "category": "LLM", "type": "decoder"},
+        dict(_GEOM),
+    ),
+    "__T-mla": (        # MLA: KV is a 512-wide latent, not kv_heads x head_dim
+        {"params_b": 671.0, "category": "LLM", "type": "moe", "active_b": 37.0},
+        dict(_GEOM, attn="MLA", kv_latent=512, experts=256, topk=8),
+    ),
+}
+
+
+@contextmanager
+def _synthetic_models():
+    """Inject the probe models, then remove them. In-process only."""
+    for name, (cat, arch) in _SYNTH.items():
+        MODEL_CATALOG[name] = cat
+        MODEL_ARCH[name] = arch
+    try:
+        yield
+    finally:
+        for name in _SYNTH:
+            MODEL_CATALOG.pop(name, None)
+            MODEL_ARCH.pop(name, None)
+
+
+def _kv(model, ctx=32768, prec="FP8", batch=1):
+    return session_footprint(model, prec, context_len=ctx, batch_size=batch)[1]
+
+
+def a8_kv_expert_independent(report):
+    """KV-per-session must depend on ATTENTION GEOMETRY, not on expert count.
+
+    Two MoEs with identical layers/kv_heads/hidden must get identical KV even
+    though one has 5x the total parameters. This is the C3 defect exactly:
+    `session_footprint` derives KV from `params_b x bytes_per_param`.
+    """
+    with _synthetic_models():
+        small = _kv("__T-moe-small")
+        huge  = _kv("__T-moe-huge")
+    if small <= 0:
+        raise Fail(f"KV-per-session is {small} — expected > 0")
+    ratio = huge / small
+    if not _close(ratio, 1.0, tol=0.02):
+        raise Fail(
+            f"KV scales with total params, not attention geometry: "
+            f"47B-A13 -> {small:.3f} GB vs 235B-A22 -> {huge:.3f} GB "
+            f"(ratio {ratio:.2f}, expected 1.00). Same layers/kv_heads/hidden "
+            f"must mean same KV; only expert count differs.")
+    report("8 kv-geometry", True,
+           f"KV/session identical across 5x expert inflation ({small:.3f} GB)")
+
+
+def a9_kv_linear_in_context(report):
+    """KV-per-session must be linear in context and zero at zero context."""
+    with _synthetic_models():
+        z  = _kv("__T-dense-gqa", ctx=0)
+        k1 = _kv("__T-dense-gqa", ctx=8192)
+        k2 = _kv("__T-dense-gqa", ctx=16384)
+    bad = []
+    if not _close(z, 0.0, tol=1e-9):
+        bad.append(f"ctx=0 gives {z} GB of KV, expected 0")
+    if k1 <= 0:
+        bad.append(f"ctx=8192 gives {k1} GB, expected > 0")
+    elif not _close(k2 / k1, 2.0, tol=0.02):
+        bad.append(f"doubling context scaled KV by {k2/k1:.3f}x, expected 2.00x")
+    if bad:
+        raise Fail("KV must be linear in context:\n  " + "\n  ".join(bad))
+    report("9 kv-linear", True,
+           f"KV 0 at ctx=0, {k1:.3f}->{k2:.3f} GB on a 2x context")
+
+
+def a10_capacity_uses_total(report):
+    """Weights must still be sized from TOTAL params, never active params.
+
+    An MoE occupies all its experts in VRAM even though it only reads a few per
+    token. If a well-meaning 'MoE awareness' change made weights follow
+    active_b, every capacity number on the box would become fiction.
+    """
+    with _synthetic_models():
+        w_small = session_footprint("__T-moe-small", "FP8", context_len=512)[0]
+        w_huge  = session_footprint("__T-moe-huge",  "FP8", context_len=512)[0]
+    ratio = w_huge / max(w_small, 1e-9)
+    if ratio < 4.0:
+        raise Fail(
+            f"weights_once for a 235B MoE is only {ratio:.2f}x a 47B MoE "
+            f"({w_huge:.1f} vs {w_small:.1f} GB) — expected ~5x (total params). "
+            f"Weights must NOT follow active_b.")
+    report("10 capacity-total", True,
+           f"weights scale with total params ({w_small:.0f} -> {w_huge:.0f} GB, {ratio:.1f}x)")
+
+
+def a11_mla_cheaper_than_gqa(report):
+    """MLA must yield LESS KV than GQA at the same layer count.
+
+    DeepSeek-style MLA compresses KV to a `kv_latent`-wide vector per layer.
+    512 latent vs 8 kv_heads x 128 head_dim = 1024 wide, so MLA must be cheaper
+    per token despite the model being far larger in total.
+    """
+    with _synthetic_models():
+        gqa = _kv("__T-dense-gqa")
+        mla = _kv("__T-mla")
+    if mla >= gqa:
+        raise Fail(
+            f"MLA KV/session {mla:.3f} GB >= GQA {gqa:.3f} GB at the same "
+            f"32 layers. MLA's kv_latent=512 is narrower than 8 kv_heads x 128, "
+            f"so it must be cheaper — this says KV is still following total "
+            f"parameters (671B vs 47B) instead of attention geometry.")
+    report("11 mla-kv", True,
+           f"MLA KV/session {mla:.3f} GB < GQA {gqa:.3f} GB at equal depth")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--generate", action="store_true", help="(re)write golden baseline")
@@ -273,7 +416,9 @@ def main():
         results.append((name, ok, msg))
 
     passed = failed = skipped = 0
-    for fn in (a1_backcompat, a2_ordering, a3_cost, a4_monotonic, a5_captures, a6_edges, a7_toggle):
+    for fn in (a1_backcompat, a2_ordering, a3_cost, a4_monotonic, a5_captures, a6_edges,
+               a7_toggle, a8_kv_expert_independent, a9_kv_linear_in_context,
+               a10_capacity_uses_total, a11_mla_cheaper_than_gqa):
         try:
             fn(report)
         except Fail as e:
