@@ -263,7 +263,7 @@ GPU_SPECS: dict[str, dict] = {
                  "FP16 360 PFLOPS · FP32 6 PFLOPS · FP64 100 TFLOPS · 136 kW per rack.",
     },
     "Vera Rubin / VR200": {
-        "arch": "Rubin (planned)", "class": "HGX Rubin NVL8 / Vera Rubin platform",
+        "arch": "Rubin (planned)", "class": "Vera Rubin NVL72 / HGX Rubin NVL8",
         "mem_gb": 288, "mem_type": "HBM4", "mem_bw_gbs": 22_000,
         "link": "NVLink 6, 3.6 TB/s per GPU", "nvlink_gbs": 3_600, "planned": True,
         "tflops": {
@@ -272,8 +272,15 @@ GPU_SPECS: dict[str, dict] = {
             "FP16": _tf(4_000, 8_000),   "BF16": _tf(4_000, 8_000),
             "TF32": _tf(2_000, 4_000),   "FP32": _tf(130),            "FP64": _tf(33),
         },
-        "notes": "Planned. NVFP4 inference 50 PFLOPS / training 35 PFLOPS; FP8/FP6 17.5 PFLOPS; "
-                 "FP16/BF16 4 PFLOPS; FP32 130 TFLOPS; FP64 33 TFLOPS. HGX Rubin NVL8 ≈ 10× B200 token-factory.",
+        "notes": "Planned. Per GPU: NVFP4 inference 50 PFLOPS / training 35 PFLOPS; FP8/FP6 17.5 PFLOPS; "
+                 "FP16/BF16 4 PFLOPS; FP32 130 TFLOPS; FP64 33 TFLOPS; 288 GB HBM4 @ 22 TB/s. "
+                 "NVL72 rack totals derive from these ×72 and match the published figures: "
+                 "FP4 inference 3.6 EF (vs GB300 1.44 EF, 2.5×) · NVFP4 training 2.5 EF · "
+                 "FP8 training 1.26 EF (vs 0.36 EF) · 20.7 TB HBM4 · 1.58 PB/s (vs 576 TB/s, 2.8×) · "
+                 "NVLink scale-up 259 TB/s (vs 130 TB/s). 88 Olympus Arm cores per Vera CPU, "
+                 "54 TB LPDDR5X CPU memory, TSMC 3nm. NOT the NVL144 CPX variant (8 EF / 7.5× GB300). "
+                 "Vendor perf/W claims (up to 30× throughput per MW, 35× lower token cost) are "
+                 "workload-specific marketing and are deliberately NOT modelled here.",
     },
 }
 
@@ -395,6 +402,22 @@ PLATFORMS: dict[str, dict] = {
                   desc="GB200 NVL4 — 4-GPU integrated NVLink node"),
     "XE9712":  _P(gen="17G", cat="Rack Scale",  u=42, tdp=136_000, nw=28_800, net="NVLink rack fabric + ConnectX-8 800G",
                   desc="GB300 NVL72 — 72-GPU integrated NVLink rack"),
+    # Vera Rubin NVL72. Two figures here are NOT from a Dell/NVIDIA spec sheet and are
+    # called out so they are never mistaken for published data:
+    #   tdp 230 kW — NVIDIA publishes NO rack power figure for Vera Rubin. Supply-chain
+    #     analysis (Ming-Chi Kuo, 2026) converges on 190 kW Max-Q / 230 kW Max-P, and
+    #     GIGABYTE's own NVL72 build lists a 240 kW rack maximum. We take the HIGH end of
+    #     the supported range (230 kW), which is the conservative choice for an opex
+    #     comparison — it never makes the newest rack look cheaper than it is.
+    #     For reference GB300 NVL72 is 136 kW, so this is ~1.7x the power for ~2.5x the
+    #     FP4 inference throughput.
+    #   nw 28_800 — carried over from XE9712 unchanged. Vera Rubin is expected to pair
+    #     with ConnectX-9, but no scale-OUT figure was supplied; the 260 TB/s NVLink
+    #     number is scale-UP (inside the rack) and is modelled by nvlink_gbs, not here.
+    #   gen "18G" is inferred from the platform naming, pending Dell's own matrix.
+    "XE9812":  _P(gen="18G", cat="Rack Scale",  u=42, tdp=230_000, nw=28_800,
+                  net="NVLink-6 rack fabric + ConnectX-8 800G",
+                  desc="Vera Rubin NVL72 — 72-GPU integrated NVLink-6 rack"),
     # --- 17G 8-GPU HGX --------------------------------------------------------------
     "XE9780":  _P(gen="17G", cat="8-GPU HGX",   u=8,  tdp=1_500, nw=6_400, net="8× ConnectX-8 800G IB", desc="8-GPU SXM air-cooled"),
     "XE9785":  _P(gen="17G", cat="8-GPU HGX",   u=8,  tdp=1_500, nw=6_400, net="8× ConnectX-8 800G IB", desc="8-GPU SXM air-cooled"),
@@ -452,6 +475,9 @@ _CATALOG_ROWS: list[tuple] = [
     # ---- 17G rack-scale — GPU-INCLUSIVE: gpu_price is a reference, never added -------
     ("XE8712",  "GB200 NVL4", "GB200 NVL4", 4, 4,   993_000, 248_250),
     ("XE9712",  "GB300", "GB300 NVL72",  72, 72, 6_200_000,  86_111),
+    # Vera Rubin NVL72 at the supplied rack price. 8,724,954 / 72 = 121,180 per GPU,
+    # a modeling reference only — node_price() never adds it for a rack-scale row.
+    ("XE9812",  "Vera Rubin / VR200", "Vera Rubin NVL72", 72, 72, 8_724_954, 121_180),
     # ---- 17G 8-GPU HGX (base + 8 × GPU) ---------------------------------------------
     ("XE9785",  "B300 AC", "B300 AC (x8)", 8,  8,    75_000,  53_000),   # ⚠ outlier vs XE9780 B300 $250K
     ("XE9780",  "B200 AC", "B200 AC (x8)", 8,  8,   250_000,  47_500),
@@ -536,7 +562,7 @@ _CATALOG_ROWS: list[tuple] = [
 
 # Platforms whose Platform Price is the INTEGRATED solution estimate (shape 3): the accelerators
 # are already in the price, so gpu_price is recorded as a reference and never added.
-_RACK_SCALE_PLATFORMS = {"XE8712", "XE9712"}
+_RACK_SCALE_PLATFORMS = {"XE8712", "XE9712", "XE9812"}
 
 # GPU → (gpu_link class, nvlink?, sxm?, link_label). Verified 2026-07-16:
 #   * the entire RTX PRO line has NO NVLink — multi-GPU is PCIe Gen5 only
@@ -560,6 +586,11 @@ _GPU_LINK: dict[str, tuple[str, bool, bool, str]] = {
     "GB200 NVL4":       ("nvlink-switch", True,  True,  "NVLink (fixed NVL4)"),
     "GB200":            ("nvlink-switch", True,  True,  "NVLink Switch (rack)"),
     "GB300":            ("nvlink-switch", True,  True,  "NVLink Switch (rack)"),
+    # NVLink 6 doubles rack scale-up to 260 TB/s (vs GB300's 130), but it reuses the
+    # `nvlink-switch` penalty rather than getting a new, better one: we have no measured
+    # parallel-efficiency figure for Rubin, and crediting it with an unmeasured improvement
+    # would flatter the newest part. This under-states Rubin slightly, on purpose.
+    "Vera Rubin / VR200": ("nvlink-switch", True, True, "NVLink-6 Switch (rack)"),
 }
 
 # Chart colors are assigned by ARCHITECTURE FAMILY, not per system: at ~75 systems a per-system
@@ -713,6 +744,7 @@ DEFAULT_SYSTEMS: list[str] = [
     # --- rack-scale (GPU-inclusive pricing) -----------------------------------------
     "Dell PowerEdge XE8712 (GB200 NVL4)",
     "Dell PowerEdge XE9712 (GB300 NVL72)",
+    "Dell PowerEdge XE9812 (Vera Rubin NVL72)",
 ]
 
 # Build now, BEFORE _derive_system_specs() runs below — derivation must see the generated rows.

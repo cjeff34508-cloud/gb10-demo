@@ -269,3 +269,80 @@ differentiated** — it is one anchor applied to every model. C5 adds the MoE
 anchors and the MTP on/off pair; the deferred `active_b` decode term then makes
 the transfer between models honest. Until both land, read sessions/node and
 nodes as real and treat `$/MTok` as provisional.
+
+---
+
+# Vera Rubin NVL72 added as XE9812 — 2026-11-05
+
+Priced at the supplied **$8,724,954 per rack** (GPU-inclusive, like the other
+rack-scale rows; the $121,180/GPU figure is a modelling reference and is never
+added).
+
+## The GPU spec needed no change
+
+`GPU_SPECS["Vera Rubin / VR200"]` already held per-GPU figures that reproduce
+every rack number in the supplied stats when multiplied by 72:
+
+| Rack figure | Supplied | 72 x per-GPU spec | |
+|---|---|---|---|
+| FP4 inference | 3.6 EF | 72 x 50 PFLOPS = 3.6 EF | match |
+| NVFP4 training | 2.5 EF | 72 x 35 PFLOPS = 2.52 EF | match |
+| FP8 training | ~1.2 EF | 72 x 17.5 PFLOPS = 1.26 EF | match |
+| HBM capacity | 20.7 TB | 72 x 288 GB = 20.736 TB | match |
+| HBM bandwidth | 1.6 PB/s | 72 x 22 TB/s = 1.584 PB/s | match |
+| NVLink scale-up | 260 TB/s | 72 x 3.6 TB/s = 259.2 TB/s | match |
+
+The dense/sparse convention already in the file (`FP4: _tf(35_000, 50_000)` —
+dense = training peak, sparse = inference peak) is exactly the 10-vs-20 /
+35-vs-50 split in the stats, and matches how GB300 is entered.
+
+## Three figures that are NOT from a spec sheet
+
+Called out in the code so they can never be mistaken for published data:
+
+1. **Rack power 230 kW.** NVIDIA publishes **no** rack power figure for Vera
+   Rubin. Supply-chain analysis (Ming-Chi Kuo, 2026) converges on **190 kW
+   Max-Q / 230 kW Max-P**, and GIGABYTE's own NVL72 build lists a **240 kW**
+   rack maximum. We take the **high end of the supported range (230 kW)** —
+   conservative for an opex comparison, since it never makes the newest rack
+   look cheaper than it is. GB300 NVL72 is 136 kW, so this is ~1.7x the power
+   for ~2.5x the FP4 inference throughput. Sources disagree; some repeat
+   Blackwell-era 120-130 kW, and the "600 kW" figure belongs to Rubin Ultra /
+   Kyber, not VR200.
+2. **Scale-out networking 28,800 Gb/s**, carried over from XE9712 unchanged.
+   Vera Rubin is expected to pair with ConnectX-9, but no scale-out figure was
+   supplied. The 260 TB/s NVLink number is scale-**up** (inside the rack) and is
+   modelled by `nvlink_gbs`, not by `nw`.
+3. **Generation "18G"**, inferred from the platform naming pending Dell's own
+   matrix.
+
+`nvlink-switch` is reused as the link class rather than inventing a better
+`nvlink6` penalty. NVLink 6 does double rack scale-up, but we have no measured
+parallel-efficiency figure for Rubin, and crediting the newest part with an
+unmeasured improvement would flatter it. **This under-states Rubin on purpose.**
+
+## What the model produces
+
+Qwen3-235B-A22B, 512 users, 131K context, shared-weights capacity:
+
+| | GB300 NVL72 | Vera Rubin NVL72 | ratio |
+|---|---|---|---|
+| rack bandwidth | 576,000 GB/s | 1,584,000 GB/s | 2.75x |
+| rack power | 136 kW | 230 kW | 1.69x |
+| rack price | $6,200,000 | $8,724,954 | 1.41x |
+| aggregate tok/s | 853,934 | 2,348,318 | 2.75x |
+| **$/MTok** | **$0.3012** | **$0.1557** | **1.93x better** |
+| tok/s per MW | 6.28M | 10.21M | 1.63x |
+
+**Sessions per node is identical (180) and that is correct, not a bug** — HBM
+capacity is essentially unchanged between the two racks (20.7 TB both), exactly
+as the supplied stats state. Rubin's entire advantage here is bandwidth, which
+is what decode is bound by, so it shows up in throughput and $/MTok rather than
+in concurrency.
+
+**The vendor "up to 30x throughput per megawatt" claim is not reproduced.** The
+model gives **1.63x**, from 2.75x bandwidth against 1.69x power. The 30x and the
+"35x lower token cost" figures are workload-specific vendor estimates and are
+deliberately not modelled; the GPU spec notes say so. The supplied stats also
+warn that the "8 exaFLOPS / 7.5x GB300" number refers to the **NVL144 CPX**
+variant, which is a different system and is not in this catalog.
