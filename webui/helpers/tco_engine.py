@@ -259,15 +259,29 @@ GPU_SPECS: dict[str, dict] = {
             "FP4":  _tf(15_000, 20_000), "FP8":  _tf(5_000, 10_000),
             "FP16": _tf(2_500, 5_000),   "BF16": _tf(2_500, 5_000),   "TF32": _tf(1_250, 2_500),
         },
-        "notes": "NVL72 rack totals: 20.736 TB HBM3e / 576 TB/s · FP4 1,080 PFLOPS · FP8 720 PFLOPS · "
-                 "FP16 360 PFLOPS · FP32 6 PFLOPS · FP64 100 TFLOPS · 136 kW per rack.",
+        "notes": "NVL72 rack: 72 Blackwell Ultra / 36 Grace (72 Arm cores per CPU), TSMC N4. "
+                 "20.736 TB HBM3e / 576 TB/s · NVLink 129.6 TB/s · FP4 1,440 PFLOPS sparse / "
+                 "1,080 dense · FP8 720 PFLOPS sparse / 360 dense · FP16 360 PFLOPS · "
+                 "FP32 6 PFLOPS · FP64 100 TFLOPS · 136 kW per rack. "
+                 "TRAINING peaks are a THIRD axis, not the dense/sparse slots: FP4 training is "
+                 "10 PFLOPS/GPU (0.72 EF rack) and FP8 training 5 PFLOPS/GPU (0.36 EF rack). "
+                 "Two figures are quoted inconsistently by NVIDIA and are worth knowing before "
+                 "anyone 'corrects' them: rack HBM appears as both 20 TB (rounded) and "
+                 "20.736 TB (288 GB x 72, used here, because capacity feeds real TCO sizing); "
+                 "rack power appears as 136 kW (used here) and ~140 kW.",
     },
     "Vera Rubin / VR200": {
         "arch": "Rubin (planned)", "class": "Vera Rubin NVL72 / HGX Rubin NVL8",
         "mem_gb": 288, "mem_type": "HBM4", "mem_bw_gbs": 22_000,
         "link": "NVLink 6, 3.6 TB/s per GPU", "nvlink_gbs": 3_600, "planned": True,
         "tflops": {
-            # FP4 dense = NVFP4 training peak (35 PFLOPS), sparse = NVFP4 inference peak (50 PFLOPS)
+            # NOTE on the slot semantics: _tf(dense, sparse) normally means dense vs STRUCTURED
+            # SPARSITY. For this part the published pair is training-vs-inference peak, so the
+            # slots hold 35 (NVFP4 training) and 50 (NVFP4 inference). GB300 above instead holds
+            # true dense/sparse (15/20) with training as a separate 10 PFLOPS figure. The two
+            # racks therefore do NOT use the dense slot for the same axis. This is display-only:
+            # calculate_tco() never reads tflops (aggregate_tflops is used for the spec panels),
+            # so no TCO number depends on it — but do not compare the dense slots across parts.
             "FP4":  _tf(35_000, 50_000), "FP8":  _tf(17_500, 35_000),  # FP8/FP6 training 17.5 PFLOPS
             "FP16": _tf(4_000, 8_000),   "BF16": _tf(4_000, 8_000),
             "TF32": _tf(2_000, 4_000),   "FP32": _tf(130),            "FP64": _tf(33),
@@ -277,7 +291,8 @@ GPU_SPECS: dict[str, dict] = {
                  "NVL72 rack totals derive from these ×72 and match the published figures: "
                  "FP4 inference 3.6 EF (vs GB300 1.44 EF, 2.5×) · NVFP4 training 2.5 EF · "
                  "FP8 training 1.26 EF (vs 0.36 EF) · 20.7 TB HBM4 · 1.58 PB/s (vs 576 TB/s, 2.8×) · "
-                 "NVLink scale-up 259 TB/s (vs 130 TB/s). 88 Olympus Arm cores per Vera CPU, "
+                 "NVLink scale-up 259 TB/s (vs 130 TB/s). 72 Rubin / 36 Vera, "
+                 "88 Olympus Arm cores per Vera CPU, "
                  "54 TB LPDDR5X CPU memory, TSMC 3nm. NOT the NVL144 CPX variant (8 EF / 7.5× GB300). "
                  "Vendor perf/W claims (up to 30× throughput per MW, 35× lower token cost) are "
                  "workload-specific marketing and are deliberately NOT modelled here.",

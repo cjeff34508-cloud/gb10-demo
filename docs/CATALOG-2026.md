@@ -345,3 +345,60 @@ model gives **1.63x**, from 2.75x bandwidth against 1.69x power. The 30x and the
 deliberately not modelled; the GPU spec notes say so. The supplied stats also
 warn that the "8 exaFLOPS / 7.5x GB300" number refers to the **NVL144 CPX**
 variant, which is a different system and is not in this catalog.
+
+## Verified against the supplied GB300 / VR200 comparison table (2026-11-05)
+
+**10 of 13 rows match.** Three do not, listed by whether they affect a TCO number.
+
+| Row | GB300 want | GB300 have | VR200 want | VR200 have | |
+|---|---|---|---|---|---|
+| FP4 inference | 1.44 EF | 1.44 EF | 3.6 EF | 3.6 EF | ok |
+| FP4 inference / GPU | 20 PF | 20 PF | 50 PF | 50 PF | ok |
+| FP4 training | 0.72 EF | — | 2.5 EF | 2.52 EF | see below |
+| FP8 training | 0.36 EF | 0.36 EF | 1.2 EF | 1.26 EF | 5% |
+| GPU memory | 20 TB | **20.736 TB** | 20.7 TB | 20.736 TB | conflict |
+| HBM bandwidth | 576 TB/s | 576 TB/s | 1.6 PB/s | 1.584 PB/s | ok |
+| Bandwidth / GPU | 8 TB/s | 8 TB/s | 22 TB/s | 22 TB/s | ok |
+| NVLink | 130 TB/s | 129.6 TB/s | 260 TB/s | 259.2 TB/s | ok |
+| Rack power | ~140 kW | **136 kW** | 230 kW | 230 kW | conflict |
+| GPUs / CPUs, CPU cores, process node | — | now in notes | — | now in notes | added |
+
+### Affects TCO — needs a decision
+
+1. **GB300 rack HBM: 20 TB vs 20.736 TB.** The catalog holds 288 GB/GPU x 72 =
+   20.736 TB. `vram_gb` feeds capacity -> sessions/node -> nodes -> CapEx ->
+   $/MTok, so this one is load-bearing. **Kept at 20.736 TB**, because 288 GB/GPU
+   is the published per-GPU figure for Blackwell Ultra and 20 TB looks like a
+   rounded rack headline. Note both racks are 288 GB/GPU parts, which is exactly
+   why the supplied notes say capacity "barely changes" — at 288 GB/GPU it does
+   not change at all. If 20 TB is authoritative, per-GPU would have to be
+   277.8 GB, contradicting the 288 GB spec.
+2. **GB300 rack power: ~140 kW vs 136 kW.** Feeds `annual_power_usd` (~3% of
+   rack opex). **Kept at 136 kW** — the specific published figure, and the
+   supplied value carries a "~". Changing it makes GB300 look ~3% worse on opex,
+   i.e. flatters Rubin, so leaving it is the conservative choice.
+
+### Display only — no TCO impact
+
+3. **VR200 FP8 training: 1.2 EF vs 1.26 EF.** 17.5 PFLOPS/GPU x 72 = 1.26 EF;
+   1.2 EF implies 16.67 PFLOPS/GPU. Within 5%, so one side is rounded. Left as is.
+4. **The FP4 dense slot does not mean the same thing on the two racks.**
+   `_tf(dense, sparse)` normally means dense vs *structured sparsity*:
+   - GB300 holds true dense/sparse (15 / 20 PFLOPS per GPU)
+   - VR200 holds training/inference peaks (35 / 50 PFLOPS per GPU)
+
+   The supplied table makes this visible: GB300 FP4 **training** is 10 PFLOPS/GPU
+   (0.72 EF rack), which is neither its dense 15 nor its sparse 20 — so training
+   is a **third axis**, and VR200's dense slot is carrying a training number.
+   This predates the Rubin row (the original comment in the file already said
+   "FP4 dense = NVFP4 training peak"). It is harmless for costing because
+   **`calculate_tco()` never reads `tflops`** — `aggregate_tflops()` only feeds
+   the spec panels — but the dense slots must not be compared across parts. Both
+   entries now say so, and GB300's training peaks (FP4 10 PF/GPU, FP8 5 PF/GPU)
+   are recorded in its notes.
+
+### Added from the table
+
+GPUs/CPUs (72 Blackwell Ultra / 36 Grace vs 72 Rubin / 36 Vera), CPU cores
+(72 vs 88 per CPU), and process node (TSMC N4 vs 3nm) were absent from the
+catalog and are now in both `notes` strings.
