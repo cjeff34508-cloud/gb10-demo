@@ -402,15 +402,16 @@ PLATFORMS: dict[str, dict] = {
                   desc="GB200 NVL4 — 4-GPU integrated NVLink node"),
     "XE9712":  _P(gen="17G", cat="Rack Scale",  u=42, tdp=136_000, nw=28_800, net="NVLink rack fabric + ConnectX-8 800G",
                   desc="GB300 NVL72 — 72-GPU integrated NVLink rack"),
-    # Vera Rubin NVL72. Two figures here are NOT from a Dell/NVIDIA spec sheet and are
-    # called out so they are never mistaken for published data:
-    #   tdp 230 kW — NVIDIA publishes NO rack power figure for Vera Rubin. Supply-chain
-    #     analysis (Ming-Chi Kuo, 2026) converges on 190 kW Max-Q / 230 kW Max-P, and
-    #     GIGABYTE's own NVL72 build lists a 240 kW rack maximum. We take the HIGH end of
-    #     the supported range (230 kW), which is the conservative choice for an opex
-    #     comparison — it never makes the newest rack look cheaper than it is.
-    #     For reference GB300 NVL72 is 136 kW, so this is ~1.7x the power for ~2.5x the
-    #     FP4 inference throughput.
+    # Vera Rubin NVL72. Rack power is confirmed (see below). Two remaining figures are
+    # NOT from a Dell/NVIDIA spec sheet and are called out so they are never mistaken
+    # for published data:
+    #   tdp 230 kW — CONFIRMED 2026-11-05. Treat this as the figure, not an estimate.
+    #     NVIDIA does not publish a rack power number publicly, and third-party sources
+    #     disagree (supply-chain analysis quotes 190 kW Max-Q / 230 kW Max-P; GIGABYTE's
+    #     NVL72 build lists a 240 kW maximum; some articles still repeat Blackwell-era
+    #     120-130 kW, and the "600 kW" figure belongs to Rubin Ultra / Kyber, not VR200).
+    #     Do not "correct" this against a blog. For reference GB300 NVL72 is 136 kW, so
+    #     this is ~1.7x the power for ~2.5x the FP4 inference throughput.
     #   nw 28_800 — carried over from XE9712 unchanged. Vera Rubin is expected to pair
     #     with ConnectX-9, but no scale-OUT figure was supplied; the 260 TB/s NVLink
     #     number is scale-UP (inside the rack) and is modelled by nvlink_gbs, not here.

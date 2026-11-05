@@ -296,19 +296,18 @@ The dense/sparse convention already in the file (`FP4: _tf(35_000, 50_000)` —
 dense = training peak, sparse = inference peak) is exactly the 10-vs-20 /
 35-vs-50 split in the stats, and matches how GB300 is entered.
 
-## Three figures that are NOT from a spec sheet
+## One figure confirmed, two still inferred
 
 Called out in the code so they can never be mistaken for published data:
 
-1. **Rack power 230 kW.** NVIDIA publishes **no** rack power figure for Vera
-   Rubin. Supply-chain analysis (Ming-Chi Kuo, 2026) converges on **190 kW
-   Max-Q / 230 kW Max-P**, and GIGABYTE's own NVL72 build lists a **240 kW**
-   rack maximum. We take the **high end of the supported range (230 kW)** —
-   conservative for an opex comparison, since it never makes the newest rack
-   look cheaper than it is. GB300 NVL72 is 136 kW, so this is ~1.7x the power
-   for ~2.5x the FP4 inference throughput. Sources disagree; some repeat
-   Blackwell-era 120-130 kW, and the "600 kW" figure belongs to Rubin Ultra /
-   Kyber, not VR200.
+1. ~~Rack power~~ — **CONFIRMED at 230 kW on 2026-11-05.** This is the figure,
+   not an estimate, and it should not be "corrected" against a blog. For context
+   on why that matters: NVIDIA does not publish a rack power number publicly and
+   third-party sources disagree badly — supply-chain analysis quotes 190 kW
+   Max-Q / 230 kW Max-P, GIGABYTE's own NVL72 build lists a 240 kW maximum, some
+   articles still repeat Blackwell-era 120-130 kW, and the "600 kW" figure
+   belongs to Rubin Ultra / Kyber rather than VR200. GB300 NVL72 is 136 kW, so
+   230 kW is ~1.7x the power for ~2.5x the FP4 inference throughput.
 2. **Scale-out networking 28,800 Gb/s**, carried over from XE9712 unchanged.
    Vera Rubin is expected to pair with ConnectX-9, but no scale-out figure was
    supplied. The 260 TB/s NVLink number is scale-**up** (inside the rack) and is
