@@ -843,3 +843,65 @@ with that reason rather than passing or failing. The capability is built and the
 prerequisite is unmet; closing it needs either a compressed-tensors VLM
 checkpoint or a vLLM-backed vision path, which is the same conclusion C5 reached
 about ModelOpt models generally.
+
+---
+
+# The TCO demo does not need the HF path at all — 2026-11-05
+
+## The realisation
+
+`calculate_tco()` contains **zero** model-loading calls. The TCO tab needs three
+things: catalog metadata, a user count, and one throughput anchor. None of them
+require transformers to load a checkpoint. So every quantization problem above —
+ModelOpt, block-fp8, garbage generation — blocks the **Benchmark** tab and leaves
+the TCO demo entirely untouched.
+
+What *was* weak was the anchor. It came from:
+
+1. the largest tok/s of the last HF benchmark run in the session, or
+2. a hardcoded **1200 tok/s**,
+
+and either way **one number was applied to every model**. That is why `$/MTok`
+read identically across models differing 40x in active parameters — and 1200
+tok/s is an aggregate-scale figure, wrong for single-stream decode on every
+model in the catalog.
+
+## Fix: per-model anchors from the vLLM captures
+
+`vllm_reference.measured_tps(catalog_name)` returns the capture's n=1 per-user
+figure — single-stream decode, which is the quantity the engine transfers across
+hardware — plus a provenance string. The TCO tab prefers it, in this order:
+
+1. **a vLLM capture for the selected model** — green, with precision and date;
+2. **this session's HF benchmark** — amber, stating plainly that it is a
+   *different* model's number and that capacity is unaffected;
+3. **nothing** — red, saying capacity/nodes/CapEx are still sound (they come from
+   attention geometry and measured checkpoint size) while the tok/s-derived
+   figures are only as good as the number entered.
+
+The silent 1200 fallback is gone; it now falls back to the slowest figure
+actually measured (13.1), which errs toward under-claiming.
+
+## Effect
+
+Three models have real anchors, and the cost column finally separates them.
+32 users, 8192 context, shared-weights, on one GB10:
+
+| model | anchor | nodes | sessions/node | aggregate | $/MTok |
+|---|---|---|---|---|---|
+| Qwen2.5-7B | 13.1 tok/s | 1 | 226 | 296 tok/s | $0.3348 |
+| Qwen3-8B-NVFP4 | 38.8 tok/s | 1 | 96 | 878 tok/s | $0.1130 |
+| Qwen3.6-35B-A3B | 50.8 tok/s | 1 | **505** | **1,149 tok/s** | **$0.0863** |
+
+The 35B MoE is simultaneously the cheapest per token and the highest
+concurrency — the sparse-model story, now visible in cost rather than only in
+capacity. Before this change all three showed the same $/MTok.
+
+## What is still needed
+
+Only more anchors. `scripts/recapture_reference.sh` has the fixed KV guard; the
+35B arms need a larger `--kv-cache-memory` (or fewer seats) so pre-allocation
+does not saturate the pool, and the MTP and Nemotron-Lightning arms have not run.
+Each additional capture is one row in `_CATALOG_TO_CAPTURE` and one more model
+with a defensible TCO. **Nothing here depends on the HF benchmark path being
+fixed**, which is the part transformers blocks.

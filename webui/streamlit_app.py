@@ -2288,19 +2288,49 @@ with tab_tco:
         # Dell Pro Max GB10 measured TPS override (LLM profile only — FinTech sizes on bandwidth).
         if not is_fintech:
             st.markdown("**Throughput Baseline**")
-            if _gb10_tps_measured:
+            # Anchor order, best first:
+            #   1. a vLLM capture FOR THE SELECTED MODEL — a real single-stream
+            #      measurement, per model, independent of the HF stack (which
+            #      cannot run any 2026 quantized checkpoint at all);
+            #   2. an HF benchmark run from this session, if there was one;
+            #   3. nothing — and then say so rather than defaulting to a number.
+            # Before this, (2) or a hardcoded 1200 tok/s was applied to EVERY
+            # model, which is why $/MTok read the same for models differing 40x
+            # in active parameters.
+            from helpers.vllm_reference import measured_tps as _vllm_tps
+            _anchor, _anchor_why = _vllm_tps(tco_model)
+            default_tps = None
+            if _anchor:
+                st.success(f"**{_anchor:.1f} tok/s** for **{tco_model}** — {_anchor_why}")
+                default_tps = _anchor
+            elif _gb10_tps_measured:
                 _src = f" ({_gb10_tps_model.split('/')[-1]})" if _gb10_tps_model else ""
-                st.success(f"Using measured Dell Pro Max GB10 TPS: **{_gb10_tps_measured:.0f} tok/s**{_src}")
+                st.warning(
+                    f"No vLLM capture for **{tco_model}**. Falling back to this "
+                    f"session's HF benchmark{_src}: **{_gb10_tps_measured:.0f} tok/s** — "
+                    f"a DIFFERENT model's number, so treat the throughput side as "
+                    f"indicative. Capacity and node counts are unaffected."
+                )
                 default_tps = _gb10_tps_measured
             else:
-                st.info("No benchmark run yet — using estimated Dell Pro Max GB10 throughput.")
-                default_tps = None
+                st.error(
+                    f"**No measured anchor for {tco_model}.** Capacity, node count "
+                    f"and CapEx below are still sound — they come from attention "
+                    f"geometry and measured checkpoint size. The tok/s-derived "
+                    f"figures ($/MTok, aggregate throughput) are only as good as the "
+                    f"number you enter next. Capture one with "
+                    f"`scripts/recapture_reference.sh`."
+                )
 
             # Measured TPS can legitimately be <10 tok/s for very large models, so
             # keep min low and clamp the default into [min,max] — a measured value
             # outside the range must not crash the widget (StreamlitValueBelowMinError).
             _tps_min, _tps_max = 1.0, 50000.0
-            _tps_default = float(default_tps) if default_tps else 1200.0
+            # 1200 tok/s is an AGGREGATE-scale figure, not single-stream; it was
+            # the old silent default and is wrong for every model in the catalog.
+            # Fall back to the slowest thing we have actually measured instead,
+            # which at least errs toward under-claiming.
+            _tps_default = float(default_tps) if default_tps else 13.1
             _tps_default = min(_tps_max, max(_tps_min, _tps_default))
             tco_tps_override = st.number_input(
                 "Dell Pro Max GB10 Baseline TPS (tok/s) — override",

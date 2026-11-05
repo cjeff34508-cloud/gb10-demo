@@ -66,3 +66,53 @@ def has_real_fp4() -> bool:
         if cap.get("fp4_supported") is True and (cap.get("per_n") or cap.get("hf_eager_tps")):
             return True
     return False
+
+# ---------------------------------------------------------------------------
+# Per-model measured anchors for the TCO tab
+# ---------------------------------------------------------------------------
+# The TCO engine never loads a model — it needs catalog metadata, a user count,
+# and ONE throughput anchor. That anchor used to come from the last HF benchmark
+# run in the session, or a hardcoded 1200 tok/s, applied to every model alike.
+# Both are bad: the HF path cannot run any 2026 quantized checkpoint
+# (docs/CATALOG-2026.md), and a single number across models that differ 40x in
+# active parameters is why $/MTok read identically for all of them.
+#
+# vLLM captures fix it: they are real single-stream measurements, they exist per
+# model, and they do not depend on the HF stack at all. This map ties a
+# MODEL_CATALOG key to its capture key.
+_CATALOG_TO_CAPTURE: dict[str, str] = {
+    "Qwen2.5-7B":              "qwen2.5-7b",
+    "nvidia/Qwen3-8B-NVFP4":   "qwen3-8b-nvfp4",
+    "Qwen3.6-35B-A3B":         "qwen3.6-35b-a3b-fp8",
+    # added as the capture run is extended:
+    # "Nemotron-3.5-Lightning-30B-A3B": "nemotron-3.5-lightning-30b-a3b",
+}
+
+
+def measured_tps(catalog_name: str) -> tuple[float | None, str]:
+    """``(single_stream_tok_s, provenance)`` for a MODEL_CATALOG entry.
+
+    Returns the capture's n=1 per-user figure — single-stream decode, the same
+    quantity the TCO engine transfers across hardware. ``provenance`` is a short
+    human string for the UI so a number is never shown without saying where it
+    came from.
+    """
+    key = _CATALOG_TO_CAPTURE.get(catalog_name)
+    if not key:
+        return None, f"no vLLM capture for {catalog_name}"
+    cap = get_capture(key)
+    if not cap:
+        return None, f"capture '{key}' not in the reference file"
+    rows = cap.get("per_n") or []
+    row1 = next((r for r in rows if r.get("n_users") == 1), None)
+    if not row1:
+        return None, f"capture '{key}' has no n=1 level"
+    ts = (cap.get("timestamp") or "")[:10]
+    return float(row1["per_user_tps"]), (
+        f"measured on this box via vLLM — {cap.get('precision','?')}, "
+        f"single stream, captured {ts}")
+
+
+def measured_models() -> list[str]:
+    """MODEL_CATALOG keys that have a usable measured anchor."""
+    return [m for m in _CATALOG_TO_CAPTURE if measured_tps(m)[0] is not None]
