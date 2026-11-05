@@ -149,3 +149,65 @@ The box's own Claude spending is correctly priced. `second_opinion.py:23` carrie
 first-party rate; the four logged second opinions ($0.065-$0.09) are accurate.
 Moving that path to `claude-opus-5-5` would cut it ~20% and require the constant
 to become 4.00/20.00.
+
+---
+
+# C0 downloads complete — 2026-11-05 12:03
+
+All four exact manifest matches, `rc=0`, 1 h 36 m total:
+
+| Repo | On disk | Expected |
+|---|---|---|
+| `nvidia/Gemma-4-26B-A4B-NVFP4` | 18.8 GB | 18.8 GB |
+| `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB` | 24.1 GB | 24.1 GB |
+| `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` | 75.1 GB | 75.1 GB |
+| `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | 80.4 GB | 80.4 GB |
+
+## Nemotron-3-Super is 8 attention layers of 88
+
+Its config carries no `layer_types`, but it does carry
+`hybrid_override_pattern` — the NemotronH convention where `*` is attention,
+`M` is mamba and `E` is MLP/MoE:
+
+```
+MEMEMEM*EMEMEMEM*EMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*EMEMEMEMEM*EMEMEMEM*EMEMEMEME
+```
+
+**8 attention, 40 mamba, 40 MoE.** Billing all 88 layers would have over-stated
+its KV by **11x**. At fp8 it is **4.0 KiB/token** — a 120B model with less KV per
+token than a 3B dense one, because 80 of its 88 layers hold no growing cache.
+
+With that row added, **no LLM catalog entry is on the legacy KV fallback.**
+
+## Measured checkpoint size now beats the flat estimate
+
+A flat bytes-per-param figure is wrong for mixed-precision NVFP4 releases, which
+commonly quantize only the expert projections and leave the rest BF16:
+
+| Model | flat 0.5 B/param | measured on disk | ratio |
+|---|---|---|---|
+| Laguna-S-2.1 | 59.0 GB | **92.9 GiB** | 1.6x |
+| Nemotron-3-Super-120B | 60.0 GB | **80.4 GB** | 1.3x |
+
+`MODEL_CATALOG` entries now take an optional `disk_gb` per precision, and
+`_weights_and_raw()` prefers it. Under-stating weights on a 121 GB unified pool
+is the dangerous direction — and the corrected figures match observed reality:
+
+- **Laguna**: 108.1 GB weights + 6.4 GB KV at 256K = **114.5 GB against 100 GB
+  usable → will not fit.** That matches the live box, where Laguna needs
+  `--gpu-memory-utilization 0.92` and currently fails to start.
+- **Nemotron-3-Super**: 87.1 + 1.1 = **88.1 GB → fits, but tightly**, matching
+  the "monitor memory closely" caution on a 120B NVFP4 on this hardware.
+
+## model_info.py gap closed
+
+The C2 commit added six models to the catalog without rows in
+`model_info.py`'s `MODEL_INFO` / `DESIGNED_PRECISION`, so the UI's detail panel
+and `precision_compatible()` had nothing for them. All six now have entries
+carrying the measured footprint, the real attention-layer split, and the
+per-model footguns (triton MoE backend for Qwen3.6; Bearer-only auth and
+explicit `enable_thinking` for Laguna). **0 catalog entries missing either
+table.**
+
+Final state: LLM 11/11 on disk and offered, VLM 6/6 on disk, harness 12/12,
+app serves HTTP 200.

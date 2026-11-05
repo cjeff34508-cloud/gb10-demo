@@ -852,12 +852,15 @@ MODEL_CATALOG: dict[str, dict] = {
     # are NVFP4 (~57% stays BF16), so the measured on-disk size is 92.9 GiB,
     # not the 59 GB a flat 0.5 B/param implies. Capacity here is optimistic.
     "Laguna-S-2.1":             {"params_b":  118.0, "category": "LLM",  "type": "moe", "active_b":  8.0,
-                                 "precisions": ["FP4"], "native": "FP4"},
+                                 "precisions": ["FP4"], "native": "FP4",
+                                 "disk_gb": {"FP4": 99.8}},   # 92.9 GiB measured on disk
     # Extra-large (need multi-GPU or large HW)
     "Llama-3.3-70B":            {"params_b":   70.0, "category": "LLM",  "type": "decoder"},
     "Qwen2.5-72B":              {"params_b":   72.0, "category": "LLM",  "type": "decoder"},
     "Command-R+ (104B)":        {"params_b":  104.0, "category": "LLM",  "type": "decoder"},
-    "Nemotron-3-Super-120B":    {"params_b":  120.0, "category": "LLM",  "type": "moe", "active_b": 12.0},
+    "Nemotron-3-Super-120B":    {"params_b":  120.0, "category": "LLM",  "type": "moe", "active_b": 12.0,
+                                 "precisions": ["FP4", "FP8"], "native": "FP4",
+                                 "disk_gb": {"FP4": 80.4}},   # measured on disk 2026-11-05
     "Mistral-Large-123B":       {"params_b":  123.0, "category": "LLM",  "type": "decoder"},
     "Mixtral-8x22B":            {"params_b":  141.0, "category": "LLM",  "type": "moe", "active_b": 39.0},
     "Qwen3-235B-A22B":          {"params_b":  235.0, "category": "LLM",  "type": "moe", "active_b": 22.0},
@@ -947,6 +950,10 @@ MODEL_ARCH: dict[str, dict] = {
     # context-INDEPENDENT term that is not modelled (so short-context KV here is
     # understated, long-context is right — the case capacity planning cares about).
     # Gemma-4: 5 full_attention + 25 sliding_attention (window 1024) of 30.
+    # Nemotron-3-Super: hybrid_override_pattern gives 8 attention of 88
+    # (40 mamba + 40 MoE) -> 4.0 KiB/tok @fp8. Billing all 88 layers would
+    # over-state its KV by 11x. A 120B model with less KV than a 3B dense one.
+    "Nemotron-3-Super-120B": {"layers": 88,  "attn_layers": 8,  "q_heads": 32,  "kv_heads": 2,  "hidden": 4096,  "head_dim": 128, "ctx": 262144,  "attn": "GQA (hybrid Mamba)", "experts": 512, "topk": 22},
     "Gemma-4-26B-A4B":       {"layers": 30,  "attn_layers": 5,  "q_heads": 16,  "kv_heads": 8,  "hidden": 2816,  "head_dim": 256, "ctx": 262144,  "attn": "GQA (5 full + 25 SWA)", "swa": True, "experts": 128, "topk": 4},
     "Laguna-S-2.1":          {"layers": 48,  "attn_layers": 12, "q_heads": 48,  "kv_heads": 8,  "hidden": 3072,  "head_dim": 128, "ctx": 1048576, "attn": "GQA (12 full + 36 SWA)", "swa": True, "experts": 256, "topk": 10},
     "Llama-3.3-70B":         {"layers": 80,  "q_heads": 64,  "kv_heads": 8,  "hidden": 8192,  "ctx": 131072, "attn": "GQA"},
@@ -1352,6 +1359,16 @@ def _weights_and_raw(model_name: str, precision: str,
     p_b  = info.get("params_b", 7.0)
     bpp  = _BYTES_PER_PARAM.get(precision.upper(), 4.0)
     raw  = p_b * bpp
+    # A flat bytes-per-param figure is wrong for MIXED-precision checkpoints.
+    # NVFP4 releases commonly quantize only the MoE expert projections and leave
+    # the rest BF16, so the real file is much larger than params x 0.5:
+    #   Laguna-S-2.1          118B -> flat 59.0 GB, measured 92.9 GiB  (1.6x)
+    #   Nemotron-3-Super-120B 120B -> flat 60.0 GB, measured 80.4 GB   (1.3x)
+    # Where we have measured the checkpoint on this box, the measurement wins —
+    # under-stating weights on a 121 GB unified pool is the dangerous direction.
+    disk = info.get("disk_gb", {}).get(precision.upper()) if isinstance(info.get("disk_gb"), dict) else None
+    if disk:
+        raw = float(disk)
     base_oh      = 0.08
     batch_factor = min(0.003 * batch_size, 0.20)
     return raw * (1.0 + base_oh + batch_factor), raw

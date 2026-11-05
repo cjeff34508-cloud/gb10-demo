@@ -326,3 +326,40 @@ def lookup_model_info(name: str) -> dict | None:
         if key.lower() == low:
             return val
     return None
+
+# --- 2026 catalog additions (C2, 2026-11-05). Architecture figures read from
+# each checkpoint's own config.json; footprints measured on this box.
+MODEL_INFO['nvidia/Gemma-4-26B-A4B-NVFP4'] = {
+    "headline": 'Google Gemma 4 26B-A4B (NVFP4) — small sparse MoE',
+    "body": '- **Architecture:** sparse MoE decoder, 30 layers, 128 experts, 4B active per token. Hybrid attention: only **5 of 30 layers are full attention** (25 are sliding-window, window 1024).\n- **Params:** 26B total / **4B active** · 256K context.\n- **Footprint:** ~18.8 GB on disk (NVFP4, measured) · KV 20.0 KiB/token at fp8.\n- **On Dell Pro Max GB10:** the small-MoE control. A community report measures 52 tok/s on GB10 via vLLM at ~16.5 GB of model memory, and calls the 31B dense variant the worse trade.',
+}
+MODEL_INFO['Qwen/Qwen3.8-27B-FP8'] = {
+    "headline": 'Alibaba Qwen3.8 27B (FP8) — dense-at-FP8 control',
+    "body": '- **Architecture:** dense decoder, 64 layers, GQA with 4 KV heads and head_dim 256. Hybrid attention: **16 of 64 layers are full attention** (48 are linear attention).\n- **Params:** 27B dense · 262K native context, extensible to ~1M.\n- **Footprint:** ~29 GB (FP8) · KV 32.0 KiB/token at fp8.\n- **On Dell Pro Max GB10:** present so the MoE-vs-dense comparison is like-for-like on precision — both at FP8, so any difference is architecture, not quantization. Served by qwen-hermes on :8503.',
+}
+MODEL_INFO['nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4'] = {
+    "headline": 'NVIDIA Nemotron 3.5 Lightning 30B-A3B (NVFP4) — built for DGX Spark',
+    "body": '- **Architecture:** hybrid Mamba-Transformer MoE, 52 layers of which only **6 are attention** (23 mamba + 23 MoE), 128 experts, top-6.\n- **Params:** 30B total / **3B active** · 1M context.\n- **Footprint:** ~21 GB (NVFP4) · KV **3.0 KiB/token** at fp8 — the cheapest KV in the catalog.\n- **On Dell Pro Max GB10:** NVIDIA positions this model explicitly for DGX Spark, for always-on agents doing high-volume work. The Mamba layers carry a constant-size SSM state rather than a context-growing cache, which is why 1M context is affordable here.',
+}
+MODEL_INFO['Qwen/Qwen3.6-35B-A3B-FP8'] = {
+    "headline": "Alibaba Qwen3.6 35B-A3B (FP8) — the box's measured MoE reference",
+    "body": '- **Architecture:** sparse MoE decoder, 40 layers, 256 experts, top-8, natively a VLM (vision tower present). Hybrid attention: **10 of 40 layers are full attention** (30 are linear attention).\n- **Params:** 35B total / **3B active** · 262K context.\n- **Footprint:** ~35 GB (FP8) · KV **10.0 KiB/token** at fp8 — matching the figure measured on this box.\n- **On Dell Pro Max GB10:** measured here at **61 tok/s** single-stream with MTP speculative decoding (53.8 without), 84% draft acceptance, and a 56.2 GiB peak under four concurrent requests. Needs `--moe-backend triton` + `VLLM_USE_DEEP_GEMM=0`; DeepGEMM asserts on sm_121. Served by gb10-markets on :8504.',
+}
+MODEL_INFO['nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4'] = {
+    "headline": 'NVIDIA Nemotron 3 Super 120B-A12B (NVFP4) — big model, tiny KV',
+    "body": '- **Architecture:** hybrid Mamba-Transformer MoE, 88 layers of which only **8 are attention** (40 mamba + 40 MoE), 512 routed experts, top-22.\n- **Params:** 120B total / **12B active** · 262K context.\n- **Footprint:** **80.4 GB measured on disk** — NOT the ~60 GB a flat 0.5 byte/param implies, because only the expert projections are NVFP4. KV **4.0 KiB/token** at fp8.\n- **On Dell Pro Max GB10:** a tight fit, not a comfortable one — 80.4 GB of weights on a 121 GB unified pool shared with the OS. NVIDIA publishes a DGX Spark deployment guide for it. Expect to cap `--max-model-len` hard. Remarkable property: a 120B model with less KV per token than a 3B dense one, because 80 of its 88 layers hold no growing cache.',
+}
+MODEL_INFO['poolside/Laguna-S-2.1-NVFP4'] = {
+    "headline": 'Poolside Laguna S-2.1 (NVFP4) — frontier coding model on a desktop',
+    "body": "- **Architecture:** sparse MoE decoder, 48 layers, 256 experts, top-10. Attention is **12 full + 36 sliding-window** of 48.\n- **Params:** 118B total / **8B active** · 1M context.\n- **Footprint:** **92.9 GiB measured on disk**, not the published ~71 GB — only the MoE expert projections are NVFP4 (~57% stays BF16). KV 24.0 KiB/token at fp8.\n- **On Dell Pro Max GB10:** the honest answer to 'will a frontier coding model fit on my desk'. It needs `--gpu-memory-utilization 0.92` to fit at all, ~14 min cold start, and 18 tok/s. Two API footguns: vLLM accepts `Authorization: Bearer` only, and `enable_thinking` must be set explicitly or the parser dumps the whole chain-of-thought into `content`.",
+}
+
+for _k, _v in {
+    'nvidia/Gemma-4-26B-A4B-NVFP4': ('NVFP4', 'pre-quantized NVFP4 checkpoint; loads only at FP4/NVFP4'),
+    'Qwen/Qwen3.8-27B-FP8': ('FP8', 'released as FP8; block-FP8 weights'),
+    'nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4': ('NVFP4', "pre-quantized NVFP4; NVIDIA's DGX Spark build"),
+    'Qwen/Qwen3.6-35B-A3B-FP8': ('FP8', 'released as block-FP8 MoE; needs --moe-backend triton on sm_121'),
+    'nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4': ('NVFP4', 'mixed NVFP4 — experts quantized, rest BF16'),
+    'poolside/Laguna-S-2.1-NVFP4': ('NVFP4', 'mixed NVFP4 — only MoE expert projections quantized'),
+}.items():
+    DESIGNED_PRECISION[_k] = _v
