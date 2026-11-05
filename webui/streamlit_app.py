@@ -633,11 +633,44 @@ st.divider()
 # in session_state so later calls are instant. It is unloaded + GPU flushed before a
 # benchmark run and NOT reloaded afterwards; the next Deep dive click brings it back.
 
+def retain_for_narration(inf) -> None:
+    """Keep the model the benchmark just finished with, for talking points.
+
+    Replaces the old `inf.unload()` at the end of each LLM run. Holding the last
+    model means Deep dive / cloud compare reuse it instead of loading a separate
+    3B narrator — on a 121 GB unified pool, a swap costs a full unload + load
+    cycle and a second model's memory for prose either one can write.
+
+    Only ONE model is ever retained: a previous one is unloaded first, so this
+    never stacks residents. The next benchmark calls
+    unload_narrator_for_benchmark(), which releases it again, so a run still
+    starts from a clean GPU.
+    """
+    prev = st.session_state.get("bench_inf")
+    if prev is not None and prev is not inf:
+        try:
+            prev.unload()
+        except Exception:
+            pass
+    st.session_state.bench_inf = inf
+    # a narrator built over the OLD model is now stale
+    st.session_state.narrator = None
+
+
 def ensure_narrator(show_spinner: bool = True):
-    """Load the narrator on first use; keep it resident in session_state thereafter."""
+    """Narrate with the last benchmarked model if one is resident, else load ours."""
     n = st.session_state.get("narrator")
     if n is not None and getattr(n, "ready", False) and getattr(n, "inf", None) is not None:
         return n
+
+    # Prefer the model the Benchmark tab left loaded — no swap, no extra memory.
+    bench = st.session_state.get("bench_inf")
+    if bench is not None and getattr(bench, "model", None) is not None:
+        n = make_narrator(inf=bench)
+        if getattr(n, "ready", False):
+            st.session_state.narrator = n
+            return n
+
     ok, _ = narrator_available()
     if not ok:
         st.session_state.narrator = None
@@ -652,11 +685,21 @@ def ensure_narrator(show_spinner: bool = True):
 
 
 def unload_narrator_for_benchmark():
-    """Unload the resident narrator and flush GPU memory before benchmarking."""
+    """Release the narrator AND any retained benchmark model; flush GPU memory.
+
+    Both must go: a retained 35B at FP8 is ~39 GB that the next run needs back.
+    """
     n = st.session_state.get("narrator")
     if n is not None:
-        n.unload()
+        n.unload()                      # no-op for an adopted model (benchmark owns it)
+    bench = st.session_state.get("bench_inf")
+    if bench is not None:
+        try:
+            bench.unload()
+        except Exception:
+            pass
     st.session_state.narrator = None
+    st.session_state.bench_inf = None
     free_cuda_memory()
 
 
@@ -804,7 +847,9 @@ with tab_benchmark:
                     if _txt:
                         local_summary = {"text": _txt, "model": selected_model,
                                          "precision": sweep_prec, "tps": _ptps}
-                inf.unload()
+                # Keep it for talking points rather than unloading (see
+                # retain_for_narration): the next run frees it anyway.
+                retain_for_narration(inf)
 
             st.session_state.results = {
                 "scenario": scenario,
@@ -858,7 +903,10 @@ with tab_benchmark:
                     except Exception as e:
                         st.error(f"Error @ {precision}: {e}")
                     finally:
-                        inf.unload()
+                        # Retain rather than unload so talking points reuse this
+                        # model. Each precision supersedes the previous one, so
+                        # only the LAST precision stays resident.
+                        retain_for_narration(inf)
 
         elif scenario == "Vision Throughput":
             for precision in _allowed:

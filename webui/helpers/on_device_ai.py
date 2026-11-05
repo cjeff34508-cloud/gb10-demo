@@ -125,22 +125,57 @@ def _fmt_workload(w: dict) -> str:
 class OnDeviceNarrator:
     """Loads the narrator model on the Dell Pro Max GB10, streams analysis, then unloads."""
 
-    def __init__(self, model: str = NARRATOR_MODEL, precision: str = NARRATOR_PRECISION):
+    def __init__(self, model: str = NARRATOR_MODEL, precision: str = NARRATOR_PRECISION,
+                 inf: Optional[LLMInference] = None):
+        """Narrate with an EXISTING loaded model when one is given, else load our own.
+
+        Passing `inf` (a model the Benchmark tab just finished with) means talking
+        points and the cloud comparison reuse whatever is already resident instead
+        of swapping in a second model. On a 121 GB unified pool that is the whole
+        point: a 35B at FP8 plus a separate 3B narrator is two models' worth of
+        memory and a load/unload cycle, for prose either one can write.
+        """
         self.reason = ""
         self.inf: Optional[LLMInference] = None
+        self.owns_inf = False          # only unload what we loaded ourselves
+        self.adopted = False
+
+        if inf is not None and getattr(inf, "model", None) is not None:
+            self.inf = inf
+            self.ready = True
+            self.adopted = True
+            return
+
         ok, reason = narrator_available()
         if not ok:
             self.reason, self.ready = reason, False
             return
         self.inf = LLMInference(model, precision)
+        self.owns_inf = True
         self.ready = bool(self.inf.load_model())
         if not self.ready:
             self.reason = "On-device narrator failed to load."
 
+    @property
+    def model_label(self) -> str:
+        """Which model is actually writing the prose, for the UI to show."""
+        if self.inf is None:
+            return "none"
+        name = getattr(self.inf, "model_name", "?").split("/")[-1]
+        prec = getattr(self.inf, "_effective_precision", None) or getattr(self.inf, "precision", "")
+        return f"{name} @ {prec}" + (" (reused from benchmark)" if self.adopted else "")
+
     def unload(self):
-        if self.inf is not None:
+        """Release the model ONLY if this narrator loaded it.
+
+        An adopted instance belongs to the Benchmark tab, which is responsible for
+        its lifetime — unloading it here would silently free a model the caller
+        still has a handle to.
+        """
+        if self.inf is not None and self.owns_inf:
             self.inf.unload()
-            self.inf = None
+        self.inf = None
+        self.ready = False
 
     def _stream(self, system: str, user: str, max_new_tokens: int = 384) -> Iterator[str]:
         if not self.ready or self.inf is None:
@@ -156,9 +191,19 @@ class OnDeviceNarrator:
             "Use ONLY the numbers provided — never invent benchmarks. Be concise and "
             "vendor-credible. Markdown bullets, no preamble."
         )
+        facts = _fmt_metrics(rdata)
+        # Refuse to narrate without numbers. _fmt_metrics reads BenchmarkMetrics
+        # OBJECTS via getattr; handed anything else it degrades to
+        # "precision=? · bottleneck=?", and a model told to "use ONLY the numbers
+        # provided" will cheerfully invent a throughput figure instead of saying
+        # it has none. An empty talking-points panel is recoverable; a fabricated
+        # benchmark number in front of a customer is not.
+        if not facts.strip() or "precision=?" in facts:
+            return iter(["⚠ No usable metrics to summarise — run a benchmark first. "
+                         "(Talking points are generated only from measured results.)"])
         user = (
             f"Scenario: {rdata.get('scenario')}\nModel/Test: {rdata.get('model')}\n"
-            f"Per-precision results:\n{_fmt_metrics(rdata)}\n\n"
+            f"Per-precision results:\n{facts}\n\n"
             "Write 4 short bullet talking points (headline result, what the bottleneck means, "
             "the effect of precision, one honest caveat), then one bold one-line takeaway."
         )
@@ -262,6 +307,10 @@ class OnDeviceNarrator:
         return self._stream(system, user, max_new_tokens=400)
 
 
-def make_narrator() -> OnDeviceNarrator:
-    """Load the on-device narrator (call inside a spinner; remember to .unload())."""
-    return OnDeviceNarrator()
+def make_narrator(inf: Optional[LLMInference] = None) -> OnDeviceNarrator:
+    """Narrator over an existing loaded model if `inf` is given, else load one.
+
+    (Call inside a spinner; remember to .unload() — which is a no-op for an
+    adopted model, since the Benchmark tab owns that one.)
+    """
+    return OnDeviceNarrator(inf=inf)

@@ -196,29 +196,67 @@ class LLMInference:
                     # reports false success. Let a bad checkpoint fail loudly.
                     #
                     # compressed-tensors' setup path torch.compiles an FP4 cast
-                    # kernel via Triton, which needs python3-dev headers (absent
-                    # on this box). For the run_compressed=False (BF16-decompress)
-                    # load we don't need that kernel, so disable Dynamo to run the
-                    # setup eagerly. (Real FP4 via run_compressed=True DOES need
-                    # the kernel → install python3.12-dev and drop this guard.)
+                    # kernel via Triton; disable Dynamo so the setup runs eagerly.
+                    #
+                    # MEASURED 2026-11-05 on nvidia/Qwen3-8B-NVFP4, 3x128 tokens each:
+                    #   run_compressed=False  16.07 GiB resident   6.03 tok/s
+                    #   run_compressed=True    5.96 GiB resident   6.01 tok/s
+                    # Identical throughput, 2.7x less memory — so keep the weights
+                    # PACKED. run_compressed=False expanded a 6 GB checkpoint to
+                    # 16 GB of BF16 and bought nothing. (An earlier comment here
+                    # claimed run_compressed=True needed python3-dev headers that
+                    # were "absent on this box"; python3.12-dev is installed and the
+                    # packed path loads fine.)
+                    #
+                    # Neither path is real FP4 compute: compressed-tensors
+                    # decompresses to BF16 per forward pass, so the label below
+                    # stays "BF16 compute" either way. Real NVFP4 tensor-core math
+                    # on this box exists only through vLLM — 36.4 tok/s vs 13.1 for
+                    # a BF16 7B, captured in webui/data/vllm_reference.json.
                     import torch._dynamo as _dyn
                     _dyn_prev = _dyn.config.disable
                     _dyn.config.disable = True
                     try:
-                        self.model = AutoModelForCausalLM.from_pretrained(
-                            model_path,
-                            torch_dtype=torch.bfloat16,
-                            device_map="auto",
-                            max_memory=_max_memory,
-                        )
-                        print(f"✓ Pre-quantized FP4 checkpoint loaded")
-                        # Honest labeling: on this aarch64 box the HF stack decompresses
-                        # the packed NVFP4 weights to BF16 and runs BF16 tensor cores —
-                        # it is NOT real FP4 compute. Surface that instead of implying FP4.
+                        _packed = False
+                        try:
+                            from transformers import AutoConfig, CompressedTensorsConfig
+                            _cfg = AutoConfig.from_pretrained(model_path)
+                            _qc = getattr(_cfg, "quantization_config", None)
+                            _qd = dict(_qc if isinstance(_qc, dict) else _qc.to_dict())
+                            _qd.pop("quant_method", None)
+                            _qd["run_compressed"] = True
+                            self.model = AutoModelForCausalLM.from_pretrained(
+                                model_path,
+                                device_map="auto",
+                                max_memory=_max_memory,
+                                quantization_config=CompressedTensorsConfig(**_qd),
+                            )
+                            _packed = True
+                            print("✓ Pre-quantized FP4 checkpoint loaded (weights kept packed)")
+                        except Exception as _pe:
+                            # Never lose the run over an optimisation: fall back to
+                            # the BF16-decompress load and say so.
+                            print(f"⚠ packed NVFP4 load unavailable ({type(_pe).__name__}: {_pe}); "
+                                  f"falling back to BF16-decompress")
+                            self.model = AutoModelForCausalLM.from_pretrained(
+                                model_path,
+                                torch_dtype=torch.bfloat16,
+                                device_map="auto",
+                                max_memory=_max_memory,
+                            )
+                            print("✓ Pre-quantized FP4 checkpoint loaded (decompressed to BF16)")
+
+                        # Honest labeling: the HF stack decompresses the packed NVFP4
+                        # weights to BF16 for the matmul either way, so this is NOT
+                        # real FP4 compute. Surface that rather than implying FP4.
                         self._effective_precision = "BF16 compute"
                         self._precision_note = (
-                            "NVFP4 packed weights decompressed to BF16 (run_compressed=false) — "
-                            "not real FP4 tensor-core math on this HF/aarch64 stack"
+                            "NVFP4 weights kept packed (run_compressed=true), decompressed to BF16 "
+                            "per forward — not real FP4 tensor-core math on this HF/aarch64 stack; "
+                            "real NVFP4 needs vLLM"
+                            if _packed else
+                            "NVFP4 packed weights decompressed to BF16 at load "
+                            "(run_compressed=false fallback) — not real FP4 tensor-core math"
                         )
                     except Exception as e:
                         print(f"✗ NVFP4 pre-quantized load failed: {e}")

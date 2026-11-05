@@ -474,3 +474,87 @@ exists because an over-commit on this box **deadlocks the kernel rather than
 raising a clean OOM** (2026-06-30, hard power reset). That is a risk decision
 with a real failure mode behind it, not a bug fix to slip in while debugging a
 benchmark, so it stays as it is pending an explicit call.
+
+---
+
+# FP4 path fixed + narration reuses the benchmarked model — 2026-11-05
+
+## Why FP4 results were labelled "BF16 compute" (correct, and still are)
+
+Two FP4 paths exist and **neither does real FP4 math**:
+
+* **Pre-quantized NVFP4** checkpoints — compressed-tensors decompresses to BF16
+  for the matmul.
+* **bitsandbytes FP4** — `bnb_4bit_compute_dtype=torch.bfloat16`: 4-bit storage,
+  BF16 compute.
+
+The `"BF16 compute"` label is accurate and the UI's red *"FP4: BF16 COMPUTE"*
+badge is right. **Real NVFP4 tensor-core math on this box exists only through
+vLLM**: 36.4 tok/s against 13.1 for a BF16 7B, captured in
+`webui/data/vllm_reference.json` with `fp4_supported: true`.
+
+## But the FP4 path was misconfigured — 2.7x too much memory
+
+`llm_inference.py` carried a comment claiming `run_compressed=True` needed
+python3-dev headers "absent on this box". **python3.12-dev is installed**
+(3.12.3-1ubuntu0.17), so the claim was stale and the packed path loads fine.
+
+Measured on `nvidia/Qwen3-8B-NVFP4`, 3 x 128 tokens per arm:
+
+| path | resident | tok/s (median of 3) |
+|---|---|---|
+| `run_compressed=False` (was in use) | **16.07 GiB** | 6.03 |
+| `run_compressed=True` (now in use) | **5.96 GiB** | 6.01 |
+
+**Identical throughput, 2.7x less memory.** The old path expanded a 6 GB
+checkpoint into 16 GB of BF16 and bought nothing — so the FP4 row was claiming
+a quantization story while delivering neither the speed nor the memory win.
+Weights now stay packed (`uint8` + `float8_e4m3fn` scales), verified through the
+real `LLMInference` path at 5.96 GiB.
+
+A correction worth recording: a first pass measured 6.1 vs 7.3 tok/s from single
+32-token runs and read as "also 20% faster". The 3 x 128 A/B shows that was
+noise. Same speed, less memory, nothing more.
+
+The load falls back to the BF16-decompress path (with a printed warning) if the
+packed load raises, so a checkpoint that cannot do it still benchmarks.
+
+## Talking points now reuse the last benchmarked model
+
+Previously every LLM run ended in `inf.unload()`, and clicking Deep dive then
+loaded a separate Llama-3.2-3B narrator — a second model's memory plus an
+unload/load cycle, for prose the resident model can write just as well.
+
+* `OnDeviceNarrator(inf=...)` adopts an already-loaded `LLMInference`, tracking
+  `owns_inf` so `unload()` never frees a model the Benchmark tab still holds.
+  `model_label` reports which model is writing, e.g.
+  *"Qwen2.5-7B-Instruct @ FP8 (reused from benchmark)"*.
+* `retain_for_narration(inf)` replaces the per-run unload in the LLM paths. Only
+  **one** model is ever retained — a previous one is unloaded first — and the
+  next run calls `unload_narrator_for_benchmark()`, which now releases the
+  retained model too, so benchmarks still start from a clean GPU.
+* The **Vision** path still unloads: `VisionModelInference` has no
+  `generate_stream()`.
+* Fallback is unchanged — with nothing resident, the dedicated narrator loads as
+  before.
+
+Verified: adopting a resident Qwen2.5-7B @ FP8 produced talking points with a
+memory delta of **+0.00 GiB**, and `narrator.unload()` left the benchmark model
+loaded.
+
+### A latent over-claiming path closed on the way
+
+`_fmt_metrics()` reads `BenchmarkMetrics` **objects** via `getattr`. Handed
+anything else it degrades to `precision=? · bottleneck=?`, and a model told to
+"use ONLY the numbers provided" then **invented a throughput figure** (a test
+with dict-shaped metrics produced "approximately 260 queries per second" from no
+data at all). `results_summary()` now refuses to call the model when there are no
+usable numbers and returns a notice instead. An empty panel is recoverable; a
+fabricated benchmark number in front of a customer is not.
+
+### Tradeoff to know
+
+Narration quality now varies with whatever was last benchmarked. A 3B at FP16
+writes differently from a 35B MoE, and a weaker model may hedge more. The
+numbers it is given are always the measured ones, and the guard above stops it
+narrating with none.
