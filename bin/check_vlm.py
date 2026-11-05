@@ -70,8 +70,20 @@ def main():
           "fits_in_memory + live-free + precision_compatible present" if guarded
           else "vision path still has NO memory guard")
 
+    # 5-7 need a VLM this stack can actually load. As of 2026-11-05 none exists
+    # on this box: the only HF-loadable VLM candidate (Qwen3.6-35B-A3B-FP8) is a
+    # block-fp8 checkpoint, and every pre-quantized format except
+    # compressed-tensors generates garbage here (docs/CATALOG-2026.md). So this
+    # is an unmet PREREQUISITE, not a code defect — reported as SKIP with the
+    # reason, never as a pass.
+    _ok_quant, _why_quant = precision_compatible(a.model, "FP8")
     if a.no_gpu:
         check("5-7 gpu checks", None, "skipped (--no-gpu)")
+    elif not _ok_quant:
+        check("5-7 vlm generation", None,
+              f"NO HF-loadable VLM on this box — {a.model.split('/')[-1]} refused: "
+              f"{_why_quant[:90]}. The code path is implemented and statically "
+              f"verified; it needs a compressed-tensors VLM or a vLLM-backed path.")
     else:
         from PIL import Image
         inf = VisionModelInference(a.model, "FP8")

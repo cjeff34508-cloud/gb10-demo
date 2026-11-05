@@ -331,11 +331,24 @@ def precision_compatible(model_name: str, precision: str) -> tuple[bool, str]:
 # else is refused above rather than silently mis-loaded. 'fp8' and
 # 'compressed-tensors' are implemented; NVIDIA ModelOpt ('modelopt',
 # 'modelopt_mixed') is not, as of transformers 5.5.4.
+# Pre-quantized formats VERIFIED to load AND generate coherently on this box's
+# HF stack. The list is short because it is empirical, not aspirational:
+# transformers advertises ~20 quantizers, but on this aarch64/sm_121 stack only
+# compressed-tensors actually produces correct output. Measured 2026-11-05, each
+# "load succeeded" followed by a real generation:
+#
+#   compressed-tensors  Qwen3-8B-NVFP4  -> 'How about: "Hello, how are you?"'  OK
+#   fp8 (block)         Qwen3.6-35B-A3B -> 'upift如无一言stluanncno源halt'     GARBAGE
+#   fp8 (block)         Qwen3.8-27B     -> '守则ächendblلابymmarius踵alaus'    GARBAGE
+#   modelopt            Gemma-4-26B-A4B -> '0-1 way/radius housing t[i de'    GARBAGE
+#   modelopt            Nemotron-3-Super/Lightning                            RAISES
+#
+# The garbage cases all report a SUCCESSFUL load, so a benchmark would record
+# throughput for a broken model. That is the one result this suite must never
+# produce, so anything not on this list is refused before loading. All of them
+# serve correctly under vLLM — which is the point, not a workaround.
 _HF_SUPPORTED_QUANT = {
-    "compressed-tensors", "fp8", "torchao", "bitsandbytes_4bit",
-    "bitsandbytes_8bit", "awq", "gptq", "mxfp4", "quark", "fbgemm_fp8",
-    "hqq", "quanto", "bitnet", "eetq", "aqlm", "higgs", "vptq", "spqr",
-    "auto-round", "fp_quant", "sinq", "metal", "fouroversix",
+    "compressed-tensors",
 }
 
 

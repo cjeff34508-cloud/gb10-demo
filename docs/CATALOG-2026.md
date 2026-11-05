@@ -789,3 +789,57 @@ or fewer seats so the pool is not saturated by pre-allocation. `$/MTok` therefor
 remains single-anchored, and the deferred `active_b` decode term still has no MoE
 scaling curve to calibrate against — that is the one plan item C5 has not
 delivered.
+
+---
+
+# Pre-quantized checkpoints: only compressed-tensors works here — 2026-11-05
+
+Testing C6 exposed that the ModelOpt refusal was **too narrow**. I had allowed
+`fp8` because transformers registers an fp8 quantizer. It registers it; it does
+not make it work on this stack. Every pre-quantized format was then loaded AND
+generated from:
+
+| quant_method | model | generated | |
+|---|---|---|---|
+| compressed-tensors | Qwen3-8B-NVFP4 | `How about: "Hello, how are you?"` | **OK** |
+| fp8 (block) | Qwen3.6-35B-A3B | `upift如无一言stluanncno源halt` | garbage |
+| fp8 (block) | Qwen3.8-27B | `守则ächendblلابymmarius踵alaus` | garbage |
+| modelopt | Gemma-4-26B-A4B | `0-1 way/radius housing t[i de` | garbage |
+| modelopt | Nemotron-3-Super / Lightning | — | raises |
+
+Every garbage case reports a **successful load**. A benchmark would have recorded
+throughput for a broken model.
+
+One wrong theory discarded on the way: I first assumed the fp8 garbage came from
+the demo stacking its own torchao FP8 pass on already-FP8 weights, and added a
+pass-through so pre-quantized checkpoints load as-is. **It made no difference** —
+the output was still garbage — so the cause is the stack's fp8 path itself, not
+double-quantization. The pass-through is kept because re-quantizing a quantized
+checkpoint is wrong regardless, but it was not the fix.
+
+`_HF_SUPPORTED_QUANT` is now the **empirical** set — `{compressed-tensors}` —
+with the measurements in the comment, so the list cannot drift back to "what
+transformers advertises".
+
+## Honest runnable set
+
+**LLM (5):** Llama-3.2-3B-Instruct, Qwen2.5-7B-Instruct, Qwen3-8B-NVFP4
+(compressed-tensors), Phi-4, Qwen2.5-14B-Instruct.
+**Vision encoders (4):** CLIP B/32, CLIP L/14, ViT-base, DINO-ViT-S/16.
+**Refused:** 5 LLM entries on quantization, Laguna on memory, all 3 VLM entries
+on quantization.
+
+## C6 status: implemented, not exercisable
+
+The vision track now has a real image+prompt->text path, VLM-vs-encoder
+detection, the three memory guards it previously lacked, a fixture with known
+values, and UI wiring that checks the answer against the truth file. `bin/check_vlm.py`
+passes its 4 static assertions.
+
+**But no VLM on this box can be loaded through HF**: the two Nemotron VL
+checkpoints are ModelOpt, and the one HF-loadable candidate (Qwen3.6-35B, natively
+a VLM) is block-fp8 — all three now correctly refused. So checks 5-7 report SKIP
+with that reason rather than passing or failing. The capability is built and the
+prerequisite is unmet; closing it needs either a compressed-tensors VLM
+checkpoint or a vLLM-backed vision path, which is the same conclusion C5 reached
+about ModelOpt models generally.

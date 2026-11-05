@@ -119,6 +119,20 @@ def _is_prequantized_nvfp4(model_name: str) -> bool:
     return "NVFP4" in model_name.upper() or "NVF4" in model_name.upper()
 
 
+def prequantized_method(model_name: str) -> Optional[str]:
+    """`quant_method` of an ALREADY-QUANTIZED checkpoint, else None.
+
+    Such a checkpoint must be loaded as-is. Applying the demo's own quantization
+    on top re-quantizes already-quantized weights, which loads cleanly and then
+    generates nonsense — measured 2026-11-05 on Qwen/Qwen3.6-35B-A3B-FP8, whose
+    weights are block-FP8: the torchao FP8 path reported success and produced
+    'upnofalbiore specialiw Guardsik castiwup'. Same failure class as the
+    ModelOpt models, in a model the catalog listed as runnable.
+    """
+    from .model_info import checkpoint_quant_method
+    return checkpoint_quant_method(model_name)
+
+
 def _estimate_params_b(model_name: str) -> float:
     """Active parameter count (billions) for the effective-TFLOPS estimate.
 
@@ -380,6 +394,29 @@ class LLMInference:
                 # UI reports it (consistent with the INT8/FP4 branches).
                 try:
                     from transformers import TorchAoConfig
+                    _pq = prequantized_method(self.model_name)
+                    if _pq:
+                        # Already quantized on disk — load as-is and let
+                        # transformers' own quantizer handle it. NEVER stack the
+                        # demo's torchao pass on top.
+                        self.model = AutoModelForCausalLM.from_pretrained(
+                            model_path, device_map="auto", max_memory=_max_memory,
+                            trust_remote_code=True)
+                        self._effective_precision = self.precision
+                        self._precision_note = (
+                            f"pre-quantized '{_pq}' checkpoint loaded as-is — the demo's "
+                            f"own {self.precision} pass is deliberately NOT applied "
+                            f"(re-quantizing already-quantized weights produces garbage)")
+                        print(f"✓ Pre-quantized '{_pq}' checkpoint loaded as-is "
+                              f"(no re-quantization)")
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                        self._load_ms = (time.perf_counter() - t0) * 1000
+                        self.model.eval()
+                        _freed = _drop_file_cache(model_path)
+                        if _freed > 1.0:
+                            print(f"ⓘ released {_freed:.1f} GB of checkpoint page cache")
+                        return True
                     from torchao.quantization import (
                         Float8DynamicActivationFloat8WeightConfig,
                     )
