@@ -678,3 +678,84 @@ The ModelOpt models stay in the catalog deliberately: they are real, on disk,
 correct in the TCO model, and they run under vLLM — which turns a dead end into
 the point. "Our benchmark harness can't run this; the serving stack we actually
 deploy can" is the vLLM-vs-HF story the honesty rework already tells about FP4.
+
+---
+
+# C5 — vLLM reference re-capture — 2026-11-05
+
+## What was wrong with the old reference
+
+`webui/data/vllm_reference.json` held two captures, both <=8B **dense**, from
+2026-07-21, and the NVFP4 one was **non-monotonic**: n=8 reported 24.3 tok/s per
+user against n=16's 37.1, taken at **98% KV-cache usage**. Past ~85% the pool is
+full, vLLM preempts and queues, and the sweep stops measuring throughput scaling
+and starts measuring cache pressure. The TCO engine calibrates
+`_BATCH_BW_SHARE_EXP` against that file.
+
+## Harness fixes this required
+
+Three defects surfaced on the first attempt, which failed all four arms in 2.5
+minutes:
+
+1. **HF-cache snapshots are directories of symlinks.** The symlinked models point
+   at `.../snapshots/<hash>/`, whose entries are 56-69 symlinks into
+   `../../blobs/`. Mounting the snapshot alone left every weight dangling inside
+   the container. Those arms now mount the hub ROOT with `HF_HOME` and address
+   the model by repo id, exactly as `markets-vllm.service` does.
+2. **`docker run --rm` destroyed the evidence.** An exited `--rm` container is
+   removed before `docker logs` can run, so the failure reported "No such
+   container" instead of the actual error. `--rm` dropped; `cleanup()` removes it
+   explicitly.
+3. **`nvidia/Qwen3-8B-NVFP4` ships no chat template**, so
+   `/v1/chat/completions` returns 400. That arm uses `--mode completions`.
+
+And one data-loss bug worth recording: the template failure was recorded as
+**`fp4_supported=false`, overwriting a good capture** — which would have made the
+demo claim real FP4 does not work, when it demonstrably does. Restored from git.
+`--fp4` now only attributes a failure to FP4 when the error could plausibly BE an
+FP4 problem; chat-template, transport and 404 errors leave the flag unset.
+
+## New: a KV ceiling on the sweep
+
+`capture_vllm_reference.py --kv-max` (default 0.85) stops escalating concurrency
+once the KV pool is near full. Also fixed the print, which showed
+`vllm:kv_cache_usage_perc` — a 0..1 fraction — with a `%` suffix, so 98% read as
+"0.98%".
+
+## Qwen3-8B-NVFP4, re-captured
+
+| n | per-user | aggregate | KV |
+|---|---|---|---|
+| 1 | 39 tok/s | 39 | 12% |
+| 2 | 41 | 81 | 23% |
+| 4 | 40 | 161 | 45% |
+| 8 | 40 | **321** | 89% -> stopped |
+
+Monotonic, per-user flat at ~40 tok/s while aggregate scales near-linearly —
+real shared-weights behaviour, and the n=8 anomaly is gone.
+
+## Capture config is deliberately NOT the production config
+
+`markets-vllm` serves the 35B at `--max-model-len 262144 --max-num-seqs 4`, tuned
+for long-context single-user work. A concurrency sweep needs seats, so the
+capture arms use a short context and 32 seats. That measures how aggregate
+throughput **scales with concurrency** — the quantity `_BATCH_BW_SHARE_EXP`
+models — rather than as-deployed long-context behaviour. Both are real; they
+answer different questions.
+
+## Recalibration
+
+`scripts/recalibrate_batch_exp.py` fits the exponent by least squares on
+log(aggregate) vs log(n), anchored at n=1:
+
+| capture | levels | fitted exp |
+|---|---|---|
+| qwen2.5-7b (BF16) | 6 | 0.921 |
+| qwen3-8b-nvfp4 (new) | 4 | **0.989** |
+| pooled | | **0.955** |
+
+Pinned value: **0.9**. The measured 0.955 is +0.055 above it, comfortably inside
+assertion 5's `[0.5, 2.0]x` band. **Left at 0.9 on purpose**: a lower exponent
+under-states aggregate throughput, and under-claiming capacity is the safe
+direction for a number a customer may provision against. The measurement is
+recorded here so raising it later is a decision with evidence rather than a tweak.

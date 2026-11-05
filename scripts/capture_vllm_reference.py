@@ -179,10 +179,21 @@ async def capture(args, urls, model):
             _u = row["gpu_util"]
             print(f"    per-user {row['per_user_tps']:.0f} tok/s · "
                   f"aggregate {row['aggregate_tps']:.0f} tok/s · "
-                  f"KV {row['kv_cache_pct']:.2f}% · peak-running {row['running_peak']} · "
+                  f"KV {row['kv_cache_pct'] * 100:.0f}% · peak-running {row['running_peak']} · "
                   f"util {(f'{_u:.0f}%' if _u is not None else 'N/A')} "
                   f"({row['completed']}/{n} ok)", flush=True)
             per_n.append(row)
+            # vllm:kv_cache_usage_perc is a 0..1 fraction. Above ~0.85 the pool is
+            # effectively full: vLLM starts preempting/queueing, so higher
+            # concurrency measures the KV ceiling rather than how aggregate
+            # throughput scales — which is the thing this reference calibrates.
+            # The 2026-07 capture ran to kv=0.98 and produced a non-monotonic
+            # point (n=8: 24.3 tok/s/user vs n=16: 37.1), which is why this stops.
+            if args.kv_max and row["kv_cache_pct"] >= args.kv_max:
+                print(f"    ⏹ stopping sweep: KV {row['kv_cache_pct']*100:.0f}% "
+                      f"≥ {args.kv_max*100:.0f}% ceiling — higher concurrency would "
+                      f"measure cache pressure, not scaling", flush=True)
+                break
     return per_n
 
 
@@ -214,6 +225,10 @@ def main():
                     help="matched single-user HF-eager tok/s from the demo (enables the production-delta card)")
     ap.add_argument("--fp4", action="store_true",
                     help="mark this as the experimental NVFP4 real-FP4 capture (records fp4_supported)")
+    ap.add_argument("--kv-max", type=float, default=0.85,
+                    help="stop escalating concurrency once KV-cache usage reaches this "
+                         "fraction (0..1). 0 disables. Default 0.85 — beyond that the "
+                         "sweep measures the cache ceiling, not throughput scaling.")
     ap.add_argument("--timeout", type=float, default=600.0, help="per-request timeout (s)")
     ap.add_argument("--gpu", default="GB10")
     ap.add_argument("--out", default=str(REF_PATH_DEFAULT))
@@ -253,9 +268,27 @@ def main():
             block["notes"] += " · real NVFP4 tensor-core path (vLLM)"
     except Exception as e:
         if args.fp4:
+            # Only blame FP4 for failures that could plausibly BE an FP4 problem.
+            # A chat-template or transport error says nothing about tensor-core
+            # support, and recording fp4_supported=false for one makes the demo
+            # claim real FP4 does not work when it demonstrably does. Measured
+            # 2026-11-05: nvidia/Qwen3-8B-NVFP4 ships no chat template, so
+            # /v1/chat/completions 400s — and that overwrote a GOOD capture with
+            # fp4_supported=false.
+            _msg = str(e).lower()
+            _not_fp4 = any(t in _msg for t in (
+                "chat template", "chat_template", "badrequest", "404", "not found",
+                "connection", "timeout", "unauthorized", "model not found",
+            ))
             block["per_n"] = block.get("per_n", [])
-            block["fp4_supported"] = False
             block["error"] = str(e)
+            if _not_fp4:
+                block["notes"] += (" · capture failed for a NON-FP4 reason (see error); "
+                                   "fp4_supported left UNSET rather than claiming false")
+                block.pop("fp4_supported", None)
+                write_capture(Path(args.out), args.key, block)
+                sys.exit(f"✗ capture failed — NOT attributed to FP4: {e}")
+            block["fp4_supported"] = False
             block["notes"] += " · NVFP4 serving/inference failed — demo keeps FP4->BF16 relabel"
             write_capture(Path(args.out), args.key, block)
             sys.exit(f"✗ capture failed (recorded fp4_supported=false): {e}")
