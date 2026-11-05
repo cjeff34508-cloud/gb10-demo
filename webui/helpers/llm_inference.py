@@ -3,6 +3,7 @@
 import gc
 import time
 import threading
+import os
 from pathlib import Path
 from typing import Optional
 import torch
@@ -38,6 +39,12 @@ def _local_path(model_name: str) -> str:
     return model_name
 
 
+# Warming the page cache is only worth it while the cache cannot crowd out the
+# weights. 20 GB keeps the small/mid catalog (<=14B BF16) on equal timing footing
+# and skips the 75-120 GB checkpoints, where warming is actively harmful.
+_WARM_MAX_BYTES = 20 * 10**9
+
+
 def _warm_file_cache(model_path: str) -> None:
     """Read the checkpoint's weight files into the OS page cache.
 
@@ -48,19 +55,63 @@ def _warm_file_cache(model_path: str) -> None:
     footing (all warm), so the measured load time reflects real work
     (quantization vs plain cast, data volume) rather than disk-cache luck.
 
+    SKIPPED for large checkpoints. On this unified-memory box the page cache and
+    the model weights come out of the SAME 121 GB pool, so warming a 75 GB
+    checkpoint would need 75 GB of cache plus 75 GB of weights. Worse, the cache
+    is what `torch.cuda.mem_get_info()` counts as unavailable, so warming a big
+    model starves its own load — and the next one. Warming only ever existed to
+    make per-precision load TIMINGS comparable, which is a nicety; refusing to
+    load is not.
+
     Best-effort: ignores non-local paths (HF repo ids) and IO errors.
     """
     p = Path(model_path)
     if not p.is_dir():
         return
+    files = [f for f in sorted(p.rglob("*"))
+             if f.suffix in (".safetensors", ".bin", ".pt") and f.is_file()]
+    total = sum(f.stat().st_size for f in files)
+    if total > _WARM_MAX_BYTES:
+        print(f"ⓘ skipping cache warm-up: checkpoint is {total/1e9:.1f} GB "
+              f"(> {_WARM_MAX_BYTES/1e9:.0f} GB) — on a unified pool the warm cache "
+              f"would compete with the weights for the same memory")
+        return
+    for f in files:
+        try:
+            with open(f, "rb", buffering=0) as fh:
+                while fh.read(16 * 1024 * 1024):
+                    pass
+        except OSError:
+            pass
+
+
+def _drop_file_cache(model_path: str) -> float:
+    """Release the checkpoint's page cache. Returns GB advised.
+
+    Called AFTER a successful load: the weights are now in anonymous memory, so
+    the cached file pages are pure waste — and on this box they are waste that
+    `mem_get_info()` reports as unavailable, which is what makes the live-memory
+    guard refuse the NEXT model. POSIX_FADV_DONTNEED evicts only clean pages, so
+    nothing is written and nothing is lost.
+    """
+    p = Path(model_path)
+    if not p.is_dir():
+        return 0.0
+    dropped = 0
     for f in sorted(p.rglob("*")):
-        if f.suffix in (".safetensors", ".bin", ".pt") and f.is_file():
+        if f.suffix not in (".safetensors", ".bin", ".pt") or not f.is_file():
+            continue
+        try:
+            sz = f.stat().st_size
+            fd = os.open(f, os.O_RDONLY)
             try:
-                with open(f, "rb", buffering=0) as fh:
-                    while fh.read(16 * 1024 * 1024):
-                        pass
-            except OSError:
-                pass
+                os.posix_fadvise(fd, 0, sz, os.POSIX_FADV_DONTNEED)
+            finally:
+                os.close(fd)
+            dropped += sz
+        except (OSError, AttributeError):
+            continue
+    return dropped / 1e9
 
 
 def _is_prequantized_nvfp4(model_name: str) -> bool:
@@ -355,6 +406,16 @@ class LLMInference:
 
             self.model.eval()
             print(f"✓ Model loaded in {self._load_ms:.0f} ms")
+            # The weights are resident now, so the checkpoint's page cache is dead
+            # weight — and on this unified pool it is dead weight that
+            # mem_get_info() counts as UNAVAILABLE, which is what makes the
+            # live-memory guard refuse the next model even though the OS reports
+            # it as reclaimable. Release it here so each load leaves the box as it
+            # found it.
+            _freed = _drop_file_cache(model_path)
+            if _freed > 1.0:
+                print(f"ⓘ released {_freed:.1f} GB of checkpoint page cache "
+                      f"(weights are resident; cached file pages are not needed)")
             return True
 
         except Exception as e:

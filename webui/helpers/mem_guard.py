@@ -74,8 +74,13 @@ _MODEL_PARAMS_B: list[tuple[str, float]] = [
 # 121 GB unified pool, so a measurement always wins over the flat estimate.
 # Mirrors MODEL_CATALOG["disk_gb"] in tco_engine.py — keep the two in step.
 _MEASURED_GB: list[tuple[str, float]] = [
-    ("laguna-s-2.1",           99.8),   # 92.9 GiB measured; flat FP4 estimate said 59.0
-    ("nemotron-3-super-120b",  80.4),   # measured 2026-11-05; flat FP4 estimate said 60.0
+    ("laguna-s-2.1",                 99.8),   # 92.9 GiB measured; flat FP4 said 59.0
+    ("nemotron-3-super-120b",        80.4),   # measured; flat FP4 said 60.0
+    # The VL checkpoints were missing, and the Super-VL one was UNDER-stated:
+    # estimated 66.2 GB against a real 75.1 GB file, so the guard would have
+    # waved through a load 9 GB larger than it believed.
+    ("nemotron-3.5-super-vl-120b",   75.1),   # measured 2026-11-05
+    ("nemotron-3.5-bolt-74b",        24.1),   # measured; flat FP4 said 37.0 (over-stated)
 ]
 
 
