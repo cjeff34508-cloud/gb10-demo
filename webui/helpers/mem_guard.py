@@ -35,6 +35,12 @@ _MODEL_PARAMS_B: list[tuple[str, float]] = [
     ("gemma-4-26b",                  26.0),
     ("qwen3.6-35b-a3b",              35.0),
     ("qwen3.8-27b",                  27.0),
+    # Plain BF16 additions (2026-11-05). Explicit, because the generic suffix
+    # table has no "0.6b" key and "qwen3-0.6b" fell through to the 7.0 default
+    # — a 0.6B model reported as 7B.
+    ("qwen3-0.6b",                    0.6),
+    ("qwen3-8b",                      8.0),
+    ("qwen2.5-32b",                  32.0),
     ("mixtral-8x7b",  46.7),   # full weight load despite MoE routing
     ("mixtral",       46.7),
     ("tinyllama-1.1b", 1.1),
@@ -63,7 +69,7 @@ _MODEL_PARAMS_B: list[tuple[str, float]] = [
     ("70b", 70.0), ("35b", 35.0), ("32b", 32.0), ("27b", 27.0), ("26b", 26.0),
     ("30b", 30.0), ("14b", 14.0), ("13b", 13.0), ("8b",   8.0),
     ("7b",   7.0), ("3b",   3.0), ("1.5b",  1.5),
-    ("1.1b", 1.1), ("1b",   1.0),
+    ("1.1b", 1.1), ("1b",   1.0), ("0.6b", 0.6), ("0.5b", 0.5),
 ]
 
 

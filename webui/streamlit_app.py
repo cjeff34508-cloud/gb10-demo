@@ -27,6 +27,7 @@ from helpers import (
 )
 from helpers.mem_guard import check_precisions, estimate_model_gb, GB10_USABLE_GB, GB10_RESERVE_GB
 from helpers.benchmark_utils import free_cuda_memory
+from helpers.vllm_reference import best_anchor as _vllm_measured
 from helpers.tco_engine import (
     benchmarkable_catalog_names,
     DELL_SYSTEMS, DEFAULT_SYSTEMS, MODEL_CATALOG, calculate_tco, best_fit_systems, format_usd,
@@ -2167,7 +2168,17 @@ with tab_tco:
             # can be grounded in a measurement taken here rather than a projection.
             # Uses the same on-disk set the Benchmark tab offers, recomputed here
             # because `llm_models` only exists inside the LLM-scenario sidebar branch.
+            # TCO-worthy = (HF-benchmarkable here) UNION (has a measured vLLM
+            # anchor). The second half matters: a block-fp8 or ModelOpt model
+            # cannot be benchmarked through HF, but a vLLM capture gives it a
+            # real per-model tok/s — which is all the TCO engine needs, since it
+            # never loads a model. Qwen3.6-35B-A3B is exactly that case and is
+            # the best-costed entry in the catalog.
+            from helpers.vllm_reference import anchored_models as _measured_models
             _tco_testable = benchmarkable_catalog_names(_llm_catalog_ids())
+            for _m in _measured_models():
+                if _m in MODEL_CATALOG and _m not in _tco_testable:
+                    _tco_testable.append(_m)
             _tco_show_all = st.checkbox(
                 "Include models we cannot benchmark here",
                 value=False,
@@ -2193,11 +2204,13 @@ with tab_tco:
                      "benchmark. Tick the box above to include projection-only models.",
             )
             if not _tco_show_all and _tco_testable:
+                _n_meas = len([m for m in _tco_opts if _vllm_measured(m)[0]])
                 st.caption(
-                    f"**{len(_tco_opts)} benchmarkable models.** "
-                    f"{len(MODEL_CATALOG) - len(_tco_opts)} further catalog entries "
-                    "(405B, 671B, rack-scale) are hidden — tick the box above to size "
-                    "hardware for those as projections."
+                    f"**{len(_tco_opts)} models with a real basis here** — "
+                    f"{_n_meas} with a measured vLLM throughput anchor, the rest "
+                    f"HF-benchmarkable. {len(MODEL_CATALOG) - len(_tco_opts)} further "
+                    f"catalog entries (405B, 671B, rack-scale) are hidden — tick the "
+                    f"box above to size hardware for those as projections."
                 )
             _tco_prec_opts = supported_precisions(tco_model)
             _tco_native = native_precision(tco_model)
@@ -2297,7 +2310,7 @@ with tab_tco:
             # Before this, (2) or a hardcoded 1200 tok/s was applied to EVERY
             # model, which is why $/MTok read the same for models differing 40x
             # in active parameters.
-            from helpers.vllm_reference import measured_tps as _vllm_tps
+            from helpers.vllm_reference import best_anchor as _vllm_tps
             _anchor, _anchor_why = _vllm_tps(tco_model)
             default_tps = None
             if _anchor:

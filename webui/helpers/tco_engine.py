@@ -872,17 +872,19 @@ def interconnect_efficiency(sys: dict, gpus_per_model: int, nodes_per_copy: int)
 # A model earns a place here only if this box can actually BENCHMARK it, so a
 # TCO number for it can be grounded in a measurement rather than a projection.
 BENCHMARKABLE: dict[str, str] = {
+    # HF-RUNNABLE ONLY. Every entry here was loaded AND generated from on this
+    # box; see docs/CATALOG-2026.md. Plain (unquantized) checkpoints work, and
+    # compressed-tensors works; block-fp8 and ModelOpt load "successfully" and
+    # emit garbage, so those models are deliberately absent — they live in
+    # MODEL_CATALOG for projection and are measured through vLLM instead.
+    "Qwen/Qwen3-0.6B":                                    "Qwen3-0.6B",
     "unsloth/Llama-3.2-3B-Instruct":                      "Llama-3.2-3B",
     "Qwen/Qwen2.5-7B-Instruct":                           "Qwen2.5-7B",
+    "mistralai/Mistral-7B-v0.1":                          "Mistral-7B",
+    "Qwen/Qwen3-8B":                                      "Qwen3-8B",
     "nvidia/Qwen3-8B-NVFP4":                              "nvidia/Qwen3-8B-NVFP4",
     "microsoft/Phi-4":                                    "Phi-4 (14B)",
     "Qwen/Qwen2.5-14B-Instruct":                          "Qwen2.5-14B",
-    "nvidia/Gemma-4-26B-A4B-NVFP4":                       "Gemma-4-26B-A4B",
-    "Qwen/Qwen3.8-27B-FP8":                               "Qwen3.8-27B",
-    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4": "Nemotron-3.5-Lightning-30B-A3B",
-    "Qwen/Qwen3.6-35B-A3B-FP8":                           "Qwen3.6-35B-A3B",
-    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4":     "Nemotron-3-Super-120B",
-    "poolside/Laguna-S-2.1-NVFP4":                        "Laguna-S-2.1",
 }
 
 
@@ -911,6 +913,7 @@ def benchmarkable_catalog_names(hf_ids: list[str] | None = None) -> list[str]:
 MODEL_CATALOG: dict[str, dict] = {
     # Small
     "TinyLlama-1.1B":           {"params_b":    1.1, "category": "LLM",  "type": "decoder"},
+    "Qwen3-0.6B":               {"params_b":    0.6, "category": "LLM",  "type": "decoder"},
     "Llama-3.2-1B":             {"params_b":    1.0, "category": "LLM",  "type": "decoder"},
     "Llama-3.2-3B":             {"params_b":    3.2, "category": "LLM",  "type": "decoder"},
     "Gemma-2-9B":               {"params_b":    9.0, "category": "LLM",  "type": "decoder"},
@@ -1013,6 +1016,7 @@ def native_precision(model_name: str) -> str:
 # ---------------------------------------------------------------------------
 MODEL_ARCH: dict[str, dict] = {
     "TinyLlama-1.1B":        {"layers": 22,  "q_heads": 32,  "kv_heads": 4,  "hidden": 2048,  "ctx": 2048,   "attn": "GQA"},
+    "Qwen3-0.6B":            {"layers": 28,  "q_heads": 16,  "kv_heads": 8,  "hidden": 1024,  "head_dim": 128, "ctx": 40960,  "attn": "GQA"},
     "Llama-3.2-1B":          {"layers": 16,  "q_heads": 32,  "kv_heads": 8,  "hidden": 2048,  "ctx": 131072, "attn": "GQA"},
     "Llama-3.2-3B":          {"layers": 28,  "q_heads": 24,  "kv_heads": 8,  "hidden": 3072,  "ctx": 131072, "attn": "GQA"},
     "Gemma-2-9B":            {"layers": 42,  "q_heads": 16,  "kv_heads": 8,  "hidden": 3584,  "ctx": 8192,   "attn": "GQA", "swa": True},

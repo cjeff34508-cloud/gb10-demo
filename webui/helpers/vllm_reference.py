@@ -116,3 +116,52 @@ def measured_tps(catalog_name: str) -> tuple[float | None, str]:
 def measured_models() -> list[str]:
     """MODEL_CATALOG keys that have a usable measured anchor."""
     return [m for m in _CATALOG_TO_CAPTURE if measured_tps(m)[0] is not None]
+
+# ---------------------------------------------------------------------------
+# HF-measured anchors (webui/data/hf_anchors.json)
+# ---------------------------------------------------------------------------
+# vLLM captures cover the quantized checkpoints the HF stack cannot run. The
+# plain checkpoints it CAN run need an anchor too, or they all fall back to one
+# number and their $/MTok columns come out identical — a missing measurement
+# masquerading as a result. scripts/measure_hf_anchors.py fills this file.
+_HF_ANCHORS = _REF_PATH.parent / "hf_anchors.json"
+
+
+def _hf_anchor(catalog_name: str) -> tuple[float | None, str]:
+    try:
+        d = json.loads(_HF_ANCHORS.read_text())
+    except Exception:
+        return None, "no hf_anchors.json"
+    a = (d.get("anchors") or {}).get(catalog_name)
+    if not a or not a.get("tok_s"):
+        return None, f"no HF anchor for {catalog_name}"
+    return float(a["tok_s"]), (
+        f"measured on this box via HF eager — {a.get('precision','?')}, "
+        f"single stream, {str(a.get('timestamp',''))[:10]}")
+
+
+def best_anchor(catalog_name: str) -> tuple[float | None, str]:
+    """Best available per-model single-stream anchor, vLLM first.
+
+    vLLM wins when both exist: it is the stack the box actually serves with, and
+    HF eager is slower than batched serving on the same hardware. The caller
+    shows the provenance string, so a figure is never displayed without saying
+    which stack produced it.
+    """
+    t, why = measured_tps(catalog_name)
+    if t:
+        return t, why
+    return _hf_anchor(catalog_name)
+
+
+def anchored_models() -> list[str]:
+    """Catalog keys with ANY measured anchor (vLLM or HF)."""
+    out = list(measured_models())
+    try:
+        d = json.loads(_HF_ANCHORS.read_text())
+        for k, v in (d.get("anchors") or {}).items():
+            if v.get("tok_s") and k not in out:
+                out.append(k)
+    except Exception:
+        pass
+    return out

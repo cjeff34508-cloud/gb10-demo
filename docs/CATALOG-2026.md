@@ -905,3 +905,116 @@ does not saturate the pool, and the MTP and Nemotron-Lightning arms have not run
 Each additional capture is one row in `_CATALOG_TO_CAPTURE` and one more model
 with a defensible TCO. **Nothing here depends on the HF benchmark path being
 fixed**, which is the part transformers blocks.
+
+---
+
+# Catalog rebuilt around what actually works — 2026-11-05
+
+A catalog where every entry runs is worth more than a modern one full of
+refusals. Six of eleven LLM entries could not run through HF, so they are out of
+the benchmarkable list (they remain in `MODEL_CATALOG` for projection, and the
+35B is still first-class in TCO via its vLLM anchor).
+
+## Removed from the benchmarkable list
+
+| Model | Why |
+|---|---|
+| Gemma-4-26B-A4B-NVFP4 | ModelOpt — loads and emits garbage |
+| Nemotron-3.5-Lightning-30B-A3B | ModelOpt — raises |
+| Nemotron-3-Super-120B-A12B | ModelOpt — raises |
+| Qwen3.8-27B-FP8 | block-fp8 — loads and emits garbage |
+| Qwen3.6-35B-A3B-FP8 | block-fp8 — loads and emits garbage; **kept in TCO** (vLLM anchor) |
+| Laguna-S-2.1-NVFP4 | 110 GB against a 100 GB usable window |
+| Nemotron VL x2 (vlm list) | ModelOpt |
+
+## Added — older, plain, and verified
+
+All already on disk, so **0 GB added** (symlinks):
+
+| Model | Source | Size | Verified |
+|---|---|---|---|
+| Qwen3-0.6B | gb10-agent-stack | 1.5 G | **loads + coherent** |
+| Qwen3-8B (BF16) | gb10-agent-stack | 16 G | **loads + coherent** |
+| Mistral-7B-v0.1 | HF cache | 14 G | complete, 2/2 shards |
+
+`Qwen3-8B` at BF16 is the most useful of the three: it pairs with
+`Qwen3-8B-NVFP4` so the FP4 story becomes a **same-model** comparison rather than
+an assertion.
+
+**Rejected: Qwen2.5-32B-Instruct.** Its HF-cache entry looked usable at 53 GB but
+is an abandoned download — **8 of 17 shards, 16 incomplete markers**. Caught by
+loading it, not by inspecting it. That also explains the odd 53 GB against ~66 GB
+for a BF16 32B. The symlink was removed.
+
+`mem_guard` gained explicit sizes for the additions, because `qwen3-0.6b` matched
+no key in the suffix table and fell through to the 7.0B default — a 0.6B model
+reported as 7B. Same hazard as Laguna, third occurrence.
+
+## The resulting demo
+
+**Benchmark tab: 8 LLM models, every one verified to load and generate** — a
+ladder from 0.6B to 14B, with a BF16-vs-NVFP4 pair at 8B. Vision: 4 encoders.
+
+**TCO tab: 9 models** = the 8 benchmarkable plus Qwen3.6-35B-A3B, which has no HF
+path but does have a measured vLLM anchor. That union is the right rule: the TCO
+engine never loads a model, so "can I benchmark it here" and "can I cost it
+credibly" are different questions.
+
+## Anchors: two sources, vLLM preferred
+
+`scripts/measure_hf_anchors.py` measures single-stream tok/s for each
+HF-runnable model and writes `webui/data/hf_anchors.json`, with a coherence
+fraction and a sample of the output so a silent-garbage model cannot become an
+anchor. `best_anchor()` prefers a vLLM capture when one exists (that is the stack
+the box serves with, and HF eager is slower), else the HF figure, and always
+returns a provenance string the UI displays. Without this, every unmeasured
+model fell back to one number and their $/MTok columns were identical — a
+missing measurement masquerading as a result.
+
+## Measured anchors, all eight — 2026-11-05
+
+Every HF-runnable model measured once, single-stream, with an output sample and
+an ASCII-coherence fraction so a silent-garbage model cannot become an anchor.
+**All eight returned ascii 1.00 and readable prose.**
+
+| model | HF eager | vLLM | anchor used |
+|---|---|---|---|
+| Qwen3-0.6B | **79.0** | — | HF 79.0 |
+| Llama-3.2-3B | 25.6 | — | HF 25.6 |
+| Mistral-7B-v0.1 | 14.5 | — | HF 14.5 |
+| Qwen2.5-7B | 12.5 | **13.1** | vLLM 13.1 |
+| Qwen3-8B | 11.3 | — | HF 11.3 |
+| Qwen3-8B-NVFP4 | 6.0 | **38.8** | vLLM 38.8 |
+| Phi-4 (14B) | 7.9 | — | HF 7.9 |
+| Qwen2.5-14B | 7.7 | — | HF 7.7 |
+| Qwen3.6-35B-A3B | (cannot load) | **50.8** | vLLM 50.8 |
+
+A clean inverse-size curve — 79.0 at 0.6B down to 7.7 at 14B — which is what
+bandwidth-bound decode should look like and is itself a demo point.
+
+**The best single number in the table: Qwen3-8B-NVFP4 measures 6.0 tok/s through
+HF and 38.8 through vLLM — 6.5x on identical weights and hardware.** That is the
+serving-stack argument as a measurement rather than a claim, and it is why
+`best_anchor()` prefers vLLM.
+
+## The TCO demo, finished
+
+9 models, every one with a measured anchor. 64 users, 8192 context,
+shared-weights, one Dell Pro Max GB10:
+
+| model | anchor | src | nodes | sessions/node | aggregate | $/MTok |
+|---|---|---|---|---|---|---|
+| Qwen3-0.6B | 79.0 | HF | 1 | 126 | 3,335 | **$0.0298** |
+| Qwen3.6-35B-A3B | 50.8 | vLLM | 1 | **505** | 2,145 | $0.0463 |
+| Qwen3-8B-NVFP4 | 38.8 | vLLM | 1 | 96 | 1,638 | $0.0606 |
+| Llama-3.2-3B | 25.6 | HF | 1 | 121 | 1,082 | $0.0917 |
+| Mistral-7B-v0.1 | 14.5 | HF | 1 | 98 | 613 | $0.1619 |
+| Qwen2.5-7B | 13.1 | vLLM | 1 | 226 | 553 | $0.1794 |
+| Qwen3-8B | 11.3 | HF | 1 | 86 | 478 | $0.2078 |
+| Phi-4 (14B) | 7.9 | HF | **2** | 54 | 339 | $0.6249 |
+| Qwen2.5-14B | 7.7 | HF | **2** | 57 | 328 | $0.6463 |
+
+$/MTok now spans **22x** across the catalog, driven by per-model measurements
+rather than one shared number. Change the user count and nodes, CapEx, aggregate
+throughput and $/MTok all move off these anchors. A 35B MoE needing **one** node
+while a 14B dense needs **two** is the sparse-model argument in a single row.

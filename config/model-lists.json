@@ -1,26 +1,20 @@
 {
   "hpc": [],
   "llm": [
+    "Qwen/Qwen3-0.6B",
     "unsloth/Llama-3.2-3B-Instruct",
     "Qwen/Qwen2.5-7B-Instruct",
+    "mistralai/Mistral-7B-v0.1",
+    "Qwen/Qwen3-8B",
     "nvidia/Qwen3-8B-NVFP4",
     "microsoft/Phi-4",
-    "Qwen/Qwen2.5-14B-Instruct",
-    "nvidia/Gemma-4-26B-A4B-NVFP4",
-    "Qwen/Qwen3.8-27B-FP8",
-    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
-    "Qwen/Qwen3.6-35B-A3B-FP8",
-    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
-    "poolside/Laguna-S-2.1-NVFP4"
+    "Qwen/Qwen2.5-14B-Instruct"
   ],
   "vlm": [
     "openai/clip-vit-base-patch32",
     "openai/clip-vit-large-patch14",
     "google/vit-base-patch16-224",
-    "facebook/dino-vits16",
-    "Qwen/Qwen3.6-35B-A3B-FP8",
-    "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB",
-    "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
+    "facebook/dino-vits16"
   ],
   "cnn": [
     "microsoft/resnet-50",
