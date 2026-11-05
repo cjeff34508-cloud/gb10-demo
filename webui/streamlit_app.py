@@ -5,12 +5,16 @@ primary bottleneck, operating condition, and business-relevant output.
 """
 
 import base64
+import json
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import torch
 from pathlib import Path
 
+# _local_path resolves an HF id to an on-disk checkpoint dir (models/llm-models
+# or models/narrator-models), or returns the id unchanged when absent.
+from helpers.llm_inference import _local_path
 from helpers import (
     LLMInference,
     VisionModelInference,
@@ -413,18 +417,29 @@ if scenario in ("Quick Inference", "Long Context", "Batch Throughput", "Batch Li
     # Only models present on disk that fit within Dell Pro Max GB10 usable memory (100 GB) at
     # one or more precisions. 70B/72B are excluded: they exceed FP16/BF16 capacity
     # and are not downloaded. (See TCO Analysis tab to plan larger models on bigger HW.)
-    llm_models = [
-        "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-        "unsloth/Llama-3.2-3B-Instruct",
-        "Qwen/Qwen2.5-7B-Instruct",
-        "mistralai/Mistral-7B-v0.1",
-        "microsoft/Phi-4",
-        "Qwen/Qwen2.5-14B-Instruct",
-        "mistralai/Mixtral-8x7B-Instruct-v0.1",
-        "Qwen/Qwen2.5-32B-Instruct",
-        "nvidia/Qwen3-8B-NVFP4",
-    ]
+    # Candidates, smallest-first, from config/model-lists.json — the single
+    # source of truth for what this box can benchmark. 2026 MoE/FP4 models are
+    # the point of the suite now: dense BF16 is the WORST case for 128 GB at
+    # 273 GB/s, so a catalog of only dense models showcased the hardware's
+    # weakest axis. Retired 2026-11-05: TinyLlama-1.1B, Mistral-7B-v0.1,
+    # Mixtral-8x7B, Qwen2.5-32B (see docs/CATALOG-2026.md).
+    _llm_candidates = json.loads(
+        (Path.home() / "gb10-demo" / "config" / "model-lists.json").read_text()
+    ).get("llm", [])
+    # Only offer what is actually on disk. Without this a half-downloaded or
+    # retired entry makes from_pretrained() fall back to the HF id and pull
+    # tens of GB mid-demo.
+    llm_models = [m for m in _llm_candidates if _local_path(m) != m]
+    _llm_absent = [m for m in _llm_candidates if _local_path(m) == m]
+    if not llm_models:
+        st.sidebar.error("No LLM checkpoints found under models/llm-models.")
+        st.stop()
     selected_model = st.sidebar.selectbox("Model", llm_models)
+    if _llm_absent:
+        st.sidebar.caption(
+            f"{len(_llm_absent)} catalog model(s) not on disk: "
+            + ", ".join(m.split("/")[-1] for m in _llm_absent)
+        )
     # Limit precisions to what this checkpoint actually runs at: a pre-quantized NVFP4
     # model loads only at FP4/NVFP4; standard BF16 checkpoints run FP32/FP16/BF16 + FP8/INT8/FP4.
     # FP8 = real e4m3 tensor-core compute via torchao (validated on this Dell Pro Max GB10, sm_121 aarch64);

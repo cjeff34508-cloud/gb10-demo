@@ -946,6 +946,8 @@ MODEL_ARCH: dict[str, dict] = {
     # layers grow with context; the 36 sliding layers cache a bounded window, a
     # context-INDEPENDENT term that is not modelled (so short-context KV here is
     # understated, long-context is right — the case capacity planning cares about).
+    # Gemma-4: 5 full_attention + 25 sliding_attention (window 1024) of 30.
+    "Gemma-4-26B-A4B":       {"layers": 30,  "attn_layers": 5,  "q_heads": 16,  "kv_heads": 8,  "hidden": 2816,  "head_dim": 256, "ctx": 262144,  "attn": "GQA (5 full + 25 SWA)", "swa": True, "experts": 128, "topk": 4},
     "Laguna-S-2.1":          {"layers": 48,  "attn_layers": 12, "q_heads": 48,  "kv_heads": 8,  "hidden": 3072,  "head_dim": 128, "ctx": 1048576, "attn": "GQA (12 full + 36 SWA)", "swa": True, "experts": 256, "topk": 10},
     "Llama-3.3-70B":         {"layers": 80,  "q_heads": 64,  "kv_heads": 8,  "hidden": 8192,  "ctx": 131072, "attn": "GQA"},
     "Qwen2.5-72B":           {"layers": 80,  "q_heads": 64,  "kv_heads": 8,  "hidden": 8192,  "ctx": 131072, "attn": "GQA"},
