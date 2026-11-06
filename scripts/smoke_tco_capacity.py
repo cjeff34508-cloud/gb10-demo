@@ -739,6 +739,135 @@ def a21_frontier_has_realistic_platform(report):
            "NVL72 tok/s/user: " + ", ".join(rows))
 
 
+def a22_reproduces_published_curve(report):
+    """Reproduce the WHOLE published concurrency curve, not one operating point.
+
+    a19 checks the single-stream ceiling. This checks the shape: at the
+    co-residency each published point implies, the engine must land near that
+    point's tok/s/user. A single exponent cannot fit three points exactly (the
+    pairwise slopes run 0.60-0.82), so the gate is 20%.
+    """
+    from helpers.vllm_reference import validation_rows, NVL72_REFERENCE
+    from helpers.tco_engine import (DELL_SYSTEMS, _CONTENTION_FREE_SESSIONS_PER_GPU,
+                                    _SPAN_BW_SHARE_EXP)
+    from helpers.vllm_reference import predicted_on_platform
+    v = validation_rows()
+    if not v:
+        raise Fail("no cross_hardware_validation block")
+    got = predicted_on_platform("DeepSeek-R1 (671B)", NVL72_REFERENCE, "FP4")
+    if not got:
+        raise Fail("no projection for the validation model")
+    single, tp = got["tps_per_user"], got["gpus_per_copy"]
+    knee = _CONTENTION_FREE_SESSIONS_PER_GPU * tp
+    worst, rows = 0.0, []
+    for pt in v["points"]:
+        if pt.get("system") != NVL72_REFERENCE:
+            continue
+        pub_u = float(pt["tps_per_user"])
+        # sessions per CHIP from the published pair, converted to per COPY
+        k_copy = (float(pt["tps_per_chip"]) / pub_u) * tp
+        model = single * (min(1.0, (k_copy / knee) ** (_SPAN_BW_SHARE_EXP - 1.0)))
+        err = (model - pub_u) / pub_u
+        worst = max(worst, abs(err))
+        rows.append(f"{k_copy:.0f}/copy {model:.0f}v{pub_u:.0f} ({err:+.0%})")
+    if not rows:
+        raise Fail("no points for " + NVL72_REFERENCE)
+    if worst > 0.20:
+        raise Fail(f"curve reproduction off by {worst:.0%} (>20%): " + "; ".join(rows))
+    report("22 published-curve", True,
+           f"all {len(rows)} published points within {worst:.0%}: " + "; ".join(rows))
+
+
+def a23_spanning_models_contend(report):
+    """REGRESSION TEST for the bug this change fixes.
+
+    Contention keyed off per_gpu_density, which was 0 whenever a copy spanned
+    GPUs, so every tensor-parallel model reported a FLAT per-user rate at any
+    load. Captured failing before the fix: Llama-3.1-405B sat at 165.8 tok/s
+    from n=1 to n=256 while single-GPU Qwen2.5-7B correctly decayed 230 -> 132.
+    """
+    from helpers.tco_engine import calculate_tco
+    sysname = "Dell PowerEdge XE9680 (H200 SXM5 (x8) AC)"
+    out = []
+    for m, prec in (("Llama-3.1-405B", "BF16"), ("Llama-3.3-70B", "BF16"),
+                    ("Qwen2.5-7B", "BF16")):
+        lo = calculate_tco(sysname, m, prec, 1, 13.1, context_len=4096)
+        hi = calculate_tco(sysname, m, prec, 4096, 13.1, context_len=4096)
+        if hi.tps_per_user >= lo.tps_per_user:
+            raise Fail(f"{m}: per-user tok/s did not fall from n=1 "
+                       f"({lo.tps_per_user:.1f}) to n=4096 ({hi.tps_per_user:.1f}) "
+                       f"— contention is being skipped (TP{lo.gpus_per_copy})")
+        out.append(f"{m} TP{lo.gpus_per_copy} {lo.tps_per_user:.0f}->{hi.tps_per_user:.0f}")
+    report("23 spanning-contention", True,
+           "per-user decays under load for spanning AND single-GPU: " + ", ".join(out))
+
+
+def a24_kv_memory_is_provisioned(report):
+    """Every concurrent user's KV must be covered by provisioned VRAM.
+
+    The capacity chain is group usable VRAM - weights, / KV per session. This
+    asserts the end-to-end guarantee rather than the formula: across models,
+    systems and loads, provisioned VRAM >= copies x weights + n_users x KV, and
+    the fleet is never packed past the serving reserve.
+    """
+    from helpers.tco_engine import (calculate_tco, DELL_SYSTEMS, session_footprint,
+                                    _SERVING_MEM_FRACTION)
+    checked = 0
+    for m, prec in (("Inkling-975B-A41B", "FP4"), ("Kimi-K3 (2.8T)", "FP4"),
+                    ("Qwen2.5-7B", "BF16"), ("Mixtral-8x7B", "BF16")):
+        for sysname in ("Dell PowerEdge XE9780 (B300 AC (x8))",
+                        "Dell PowerEdge XE9712 (GB300 NVL72)"):
+            for n in (1, 512, 20000):
+                r = calculate_tco(sysname, m, prec, n, 20.0, context_len=4096)
+                if r.num_nodes <= 0:
+                    continue
+                w, kv = session_footprint(m, prec, context_len=4096 + 256)
+                usable = r.num_nodes * DELL_SYSTEMS[sysname]["vram_gb"] * _SERVING_MEM_FRACTION
+                gpn = max(DELL_SYSTEMS[sysname]["gpus_per_node"], 1)
+                copies = max(1, r.num_nodes * (gpn // max(r.gpus_per_copy, 1)))
+                need = copies * w + n * kv
+                if need > usable + 1e-6:
+                    raise Fail(f"{m} on {sysname} at n={n}: needs {need:,.0f} GB "
+                               f"(weights x{copies} + {n} KV) but only "
+                               f"{usable:,.0f} GB usable — KV over-committed")
+                checked += 1
+    report("24 kv-provisioned", True,
+           f"{checked} model/system/load combinations: provisioned VRAM covers "
+           f"weights + every concurrent user's KV, inside the "
+           f"{_SERVING_MEM_FRACTION:.0%} serving reserve")
+
+
+def a25_routing_is_diagnostic_only(report):
+    """routing_exposure() must inform, never silently change a throughput number.
+
+    The expert-imbalance cost lives in the measured concurrency exponent. If a
+    future change turns this diagnostic into a multiplier, the same imbalance
+    gets charged twice -- so this pins it as read-only.
+    """
+    from helpers.tco_engine import routing_exposure, calculate_tco
+    if routing_exposure("Llama-3.3-70B", 2) is not None:
+        raise Fail("dense model returned a routing exposure")
+    lo = routing_exposure("Kimi-K3 (2.8T)", 8, batch_tokens=1)
+    hi = routing_exposure("Kimi-K3 (2.8T)", 8, batch_tokens=256)
+    if not lo or not hi:
+        raise Fail("no routing exposure for Kimi-K3")
+    if not lo["exposed"] or hi["exposed"]:
+        raise Fail(f"exposure flag wrong: batch1 {lo['exposed']}, batch256 {hi['exposed']}")
+    if not (lo["imbalance_cv"] > hi["imbalance_cv"]):
+        raise Fail("imbalance spread must shrink as batch grows")
+    # read-only: calling it must not perturb the engine
+    a = calculate_tco("Dell PowerEdge XE9712 (GB300 NVL72)", "Kimi-K3 (2.8T)", "FP4",
+                      256, 20.0, context_len=4096)
+    routing_exposure("Kimi-K3 (2.8T)", 8, batch_tokens=256)
+    b = calculate_tco("Dell PowerEdge XE9712 (GB300 NVL72)", "Kimi-K3 (2.8T)", "FP4",
+                      256, 20.0, context_len=4096)
+    if abs(a.tps_per_user - b.tps_per_user) > 1e-9:
+        raise Fail("routing_exposure() mutated engine output")
+    report("25 routing-diagnostic", True,
+           f"dense->None; Kimi-K3 TP8 spread ±{lo['imbalance_cv']:.0%} at batch 1 "
+           f"-> ±{hi['imbalance_cv']:.0%} at batch 256; diagnostic does not alter tok/s")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--generate", action="store_true", help="(re)write golden baseline")
@@ -761,7 +890,10 @@ def main():
                a16_predictor_backtest, a17_predicted_tier_is_distinct,
                a18_sparsity_beats_size, a19_projection_matches_published,
                a20_gb10_basis_is_pass_through,
-               a21_frontier_has_realistic_platform):
+               a21_frontier_has_realistic_platform,
+               a22_reproduces_published_curve, a23_spanning_models_contend,
+               a24_kv_memory_is_provisioned,
+               a25_routing_is_diagnostic_only):
         try:
             fn(report)
         except Fail as e:

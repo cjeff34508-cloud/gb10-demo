@@ -2570,6 +2570,32 @@ with tab_tco:
             st.markdown("**📖 Selected Model**")
             st.caption(tco_model)
             st.markdown("\n".join(f"- {ln}" for ln in model_detail_lines(tco_model)))
+            # Expert-routing / load-balance exposure. A DIAGNOSTIC, not a cost:
+            # the imbalance penalty already lives in the concurrency exponent,
+            # which is fitted to a published rack curve. Shown at the selected
+            # model's own tensor-parallel width on the best-rated system so the
+            # number means something concrete rather than being generic.
+            try:
+                from helpers.tco_engine import (routing_exposure as _routing,
+                                                  model_memory_gb as _mgb,
+                                                  gpus_needed_for_model as _gn,
+                                                  DELL_SYSTEMS as _DS)
+                # TP width on the reference rack-scale part, so the figure is
+                # concrete rather than generic. Independent of UI state.
+                _ref = _DS.get("Dell PowerEdge XE9712 (GB300 NVL72)")
+                _tp = 1
+                if _ref:
+                    _per_gpu = _ref["vram_gb"] / max(_ref["gpus_per_node"], 1)
+                    _tp = _gn(_mgb(tco_model, native_precision(tco_model) or "BF16",
+                                   context_len=4096), _per_gpu)
+                _rx = _routing(tco_model, _tp, batch_tokens=1)
+                if _rx:
+                    st.caption(
+                        f"**Expert routing / load balance** (TP{_tp}, single stream): "
+                        f"{_rx['note']}"
+                    )
+            except Exception:
+                pass
 
     if not tco_systems:
         st.warning("Select at least one system to compare.")

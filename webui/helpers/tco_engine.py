@@ -1372,6 +1372,53 @@ _COPY_BW_SHARE_EXP = 0.5
 # assertion 5. 1.0 = flat/linear · 0.5 = the replicated √-law.
 _BATCH_BW_SHARE_EXP = 0.90
 
+# Bandwidth/concurrency-share exponent for a copy that SPANS GPUs (tensor- or
+# expert-parallel). Calibrated on THIRD-PARTY published data, because this box
+# cannot measure a multi-GPU anything: SemiAnalysis InferenceX's DeepSeek-R1
+# 671B-A37B FP4 curve on GB300 NVL72 reports (tok/s/user, tok/s/chip) of
+# (231, 1065.2), (162, 5393.8) and (93, 12534.4). Dividing gives co-resident
+# sessions per chip of 4.61, 33.3 and 134.8, and a least-squares fit of
+# per-user ~ k**(exp-1) over those three points gives exp = 0.7364.
+#
+# It is deliberately STEEPER than the 0.90 measured on this box, and the gap is
+# the honest content of this constant: a spanning MoE copy loses more per-user
+# throughput to concurrency than a single GB10 does, because at high batch it
+# also pays all-to-all expert dispatch/combine, expert-routing imbalance
+# (hot experts idling the GPUs that do not hold them) and compute saturation.
+#
+# Those effects are ABSORBED EMPIRICALLY here rather than modelled as separate
+# multipliers. That is a deliberate choice: the only published figure for
+# expert-imbalance cost is a vendor blog's unverified "20-40% of MoE GPU
+# cycles", and inventing a coefficient from it would both double-count what
+# this measured exponent already contains and put an unsourced number into the
+# engine. See docs/CONTENTION-CHANGE.md and routing_exposure().
+_SPAN_BW_SHARE_EXP = 0.7364
+
+# Co-resident sessions PER GPU that batch essentially free before per-user
+# throughput starts to decay. Decode is bandwidth-bound, so the first few
+# sessions ride along on a weight read that was going to happen anyway -- this
+# is the "concurrency is nearly free" claim the demo makes, and BOTH datasets
+# show it independently:
+#   * this box's vLLM capture has per-user tok/s RISING 13.1 -> 14.4 from 1 to
+#     32 users (KV pool at 0.62%), i.e. no decay at all in that range;
+#   * solving the published DeepSeek-R1 GB300 NVL72 curve for the point where
+#     its power law meets the single-stream ceiling gives 5.36 sessions/GPU.
+# Without a knee the power law is applied from k=1 and over-charges contention
+# at low concurrency: it predicted 130 tok/s/user where the published curve
+# measures 231. With it, all three published points reproduce within 11%
+# (+1.3%, -10.8%, +7.5%) -- validated across the whole range rather than at one
+# operating point. Pinned by scripts/smoke_tco_capacity.py::a22.
+_CONTENTION_FREE_SESSIONS_PER_GPU = 5.36
+
+# Fraction of nameplate VRAM a real server can actually use for weights + KV.
+# vLLM's documented default is gpu_memory_utilization=0.9, with the remainder
+# going to activations, CUDA-graph capture, the framework and allocator
+# fragmentation. Sizing KV against 100% of spec VRAM over-stated sessions/node
+# by ~11% -- and it packed an Inkling fleet to 99.5% of nameplate, which no
+# server achieves. Erring optimistically on capacity is the one direction a
+# planner must never err in, so the reserve is applied to every system.
+_SERVING_MEM_FRACTION = 0.90
+
 # Fleet-coordination overhead: a deployment of N nodes is NOT N× a single node. It
 # needs more networking (switches, cabling, spine), orchestration, monitoring,
 # spares/redundancy, and floor/power distribution — and a stack of independent
@@ -1874,43 +1921,101 @@ def calculate_tco(
     per_gpu_bw   = sys["gpu_bw_gbs"] / full_gpus
     tps_per_user = gb10_tps * (per_gpu_bw / GB10_BW_GBS) * parallel_eff
 
-    # Bandwidth contention: sessions/copies that co-reside on one physical GPU split
-    # its memory bandwidth. Co-residency is the number actually packed onto the busiest
-    # GPU under this load — per_gpu_density when fully loaded, fewer at light load — so a
-    # single user sees no contention. gpus_per_model > 1 (a copy SPANS GPUs) ⇒ density 0.
-    # Shared weights amortise the weight reads across the batch (gentle _BATCH exponent);
-    # replicated copies each re-stream full weights (steep _COPY √-law).
-    share_exp    = _BATCH_BW_SHARE_EXP if shared else _COPY_BW_SHARE_EXP
-    coresident   = min(per_gpu_density, n_users) if per_gpu_density else 1
-    bw_contention = coresident ** (share_exp - 1.0) if coresident > 1 else 1.0
-    tps_per_user *= bw_contention
-
-    # Concurrent sessions one node serves, and the nodes required for n_users.
-    if nodes_per_copy > 1:
-        # One copy spans several nodes → 1 session per copy; bill all nodes per copy.
-        sessions_per_node    = None
-        provisioned_sessions = n_users
-        nodes_needed         = n_users * nodes_per_copy
-    elif shared:
-        # Shared weights: ONE weight replica per serving group of gpus_per_model GPUs;
-        # the group's remaining VRAM (after weights) is packed with per-session KV.
-        groups_per_node = max(1, gpus_per_node_eff // max(gpus_per_model, 1))
-        group_vram      = vram_per_gpu * gpus_per_model
-        free_kv_group   = group_vram - weights_once
-        sess_per_group  = max(1, int(free_kv_group / kv_per_sess)) if free_kv_group > 0 else 1
-        sessions_per_node    = groups_per_node * sess_per_group
-        nodes_needed         = max(1, math.ceil(n_users / sessions_per_node))
-        provisioned_sessions = nodes_needed * sessions_per_node
+    # ---- Capacity FIRST, then contention ---------------------------------
+    # This order matters and used to be the other way round. Contention keyed off
+    # `per_gpu_density`, which is 0 whenever a copy spans GPUs, so every
+    # tensor-parallel model reported a FLAT per-user rate from 1 to 1000 users --
+    # Llama-3.1-405B sat at 165.8 tok/s across the whole sweep while single-GPU
+    # Qwen2.5-7B correctly decayed 230 -> 132. Co-residency cannot be known before
+    # capacity is, so capacity is computed first and the special case is gone.
+    #
+    # The unit of co-residency is the SERVING GROUP (one weight copy on
+    # `gpus_per_model` GPUs), not the physical GPU. Sessions behind one copy share
+    # that copy's bandwidth whether it occupies one GPU or sixteen.
+    #
+    # MEMORY GUARANTEE: `sess_per_copy` is derived from the group's usable VRAM
+    # after weights, divided by per-session KV, so provisioned KV always covers
+    # n_users. `_SERVING_MEM_FRACTION` keeps it off the nameplate ceiling.
+    kv_vram_per_gpu   = vram_per_gpu * _SERVING_MEM_FRACTION
+    group_vram_usable = kv_vram_per_gpu * gpus_per_model
+    if shared:
+        free_kv_group = group_vram_usable - weights_once
+        sess_per_copy = int(free_kv_group / kv_per_sess) if free_kv_group > 0 else 0
     else:
-        # Replicated: each session carries a whole weight copy (weights + its own KV).
-        vram_limited = max(1, int(vram_node_eff / max(m_gb, 1e-3)))
-        if gpus_per_model > 1:
-            gpu_limited       = max(1, gpus_per_node_eff // gpus_per_model)
-            sessions_per_node = min(vram_limited, gpu_limited)
-        else:
-            sessions_per_node = vram_limited
+        # Replicated: each session carries weights + its own KV, so a "copy" holds
+        # as many whole bundles as fit; a spanning bundle is one per group.
+        sess_per_copy = (int(group_vram_usable / max(m_gb, 1e-3))
+                         if gpus_per_model == 1 else 1)
+
+    if sess_per_copy < 1:
+        # Weights fit, but leave no room for even ONE session's KV on this group.
+        # Previously this returned 1 session anyway via max(1, ...) and produced a
+        # $/MTok, which over-claims in the dangerous direction.
+        return TCOResult(
+            system_name=system_name, num_nodes=0, capex_usd=0, annual_power_usd=0,
+            tco_usd=0, cost_per_user=0, cost_per_mtok=None,
+            predicted_tps=0, gpu_util_pct=0, fits_single_node=False,
+            recommendation="Cannot fit",
+            rec_reason=(f"Weights ({weights_once:.0f} GB) leave no room for a "
+                        f"session's KV ({kv_per_sess:.2f} GB at {eff_ctx} tok) in "
+                        f"{group_vram_usable:.0f} GB of usable group VRAM "
+                        f"({gpus_per_model} GPU(s) x {_SERVING_MEM_FRACTION:.0%} of spec)"),
+            color="#dc3545",
+            mem_bw_tbs=mem_bw_tbs, vram_total_gb=sys["vram_gb"],
+            gpus_per_node=gpus_per_node_eff, gpus_per_copy=gpus_per_model,
+            link_label=sys.get("link_label", ""),
+            unit_price=node_price(sys, gpus_per_node_eff),
+            capacity_mode=capacity_mode,
+            weights_gb=weights_once, kv_per_session_gb=kv_per_sess,
+            rating="Not Viable",
+            rating_reason="No KV headroom after weights",
+        )
+
+    # Nodes required. A copy that spans nodes still BATCHES -- that is how 671B+
+    # models are actually served -- so it no longer collapses to one session per
+    # copy. It pays for the span through `inter_eff` in parallel_eff instead.
+    if nodes_per_copy > 1:
+        copies_needed        = max(1, math.ceil(n_users / sess_per_copy))
+        nodes_needed         = copies_needed * nodes_per_copy
+        sessions_per_node    = int(sess_per_copy / nodes_per_copy)
+        provisioned_sessions = copies_needed * sess_per_copy
+        total_copies         = copies_needed
+    else:
+        groups_per_node      = max(1, gpus_per_node_eff // max(gpus_per_model, 1))
+        sessions_per_node    = groups_per_node * sess_per_copy
         nodes_needed         = max(1, math.ceil(n_users / sessions_per_node))
         provisioned_sessions = nodes_needed * sessions_per_node
+        total_copies         = nodes_needed * groups_per_node
+
+    # Bandwidth/concurrency contention: sessions sharing ONE weight copy split that
+    # copy's bandwidth. A single user sees none. Shared weights amortise the weight
+    # read across the batch (gentle exponent); a SPANNING copy additionally pays
+    # all-to-all and expert-routing imbalance, measured on a published rack curve
+    # (_SPAN_BW_SHARE_EXP); replicated copies re-stream full weights (steep √-law).
+    if not shared:
+        share_exp = _COPY_BW_SHARE_EXP
+    elif gpus_per_model > 1:
+        share_exp = _SPAN_BW_SHARE_EXP
+    else:
+        share_exp = _BATCH_BW_SHARE_EXP
+    # Co-residency is the load on the BUSIEST COPY, not the whole fleet: a 72-GPU
+    # node running a TP8 model holds 9 independent copies, and 1000 users spread
+    # over them is 112 sessions each, not 1000. Charging a copy for the fleet's
+    # entire user count was wrong by exactly the copy count.
+    per_copy_load = math.ceil(n_users / max(total_copies, 1))
+    coresident    = max(1, min(sess_per_copy, per_copy_load))
+    # The free-batching knee applies ONLY to shared weights. It exists because a
+    # batch amortises ONE weight read across its sessions, so the first few ride
+    # along on traffic that was going to happen anyway. Replicated copies share
+    # nothing -- each re-streams its own full weight set -- so they contend from
+    # the second copy onward and get no knee. Applying it to replicated mode
+    # inflated per-user tok/s by ~2.4x in the golden baseline, which is how this
+    # was caught.
+    knee = (_CONTENTION_FREE_SESSIONS_PER_GPU * max(gpus_per_model, 1)
+            if shared else 1.0)
+    bw_contention = ((coresident / knee) ** (share_exp - 1.0)
+                     if coresident > knee else 1.0)
+    tps_per_user *= bw_contention
 
     gpus_total = nodes_needed * gpus_per_node_eff
 
@@ -2270,3 +2375,73 @@ def format_usd(v: float) -> str:
     if v >= 1_000:
         return f"${v/1_000:.0f}K"
     return f"${v:.0f}"
+
+
+# ---------------------------------------------------------------------------
+# Expert routing / load-balance exposure (DIAGNOSTIC — deliberately not a cost)
+# ---------------------------------------------------------------------------
+# MODEL_ARCH has carried `experts` and `topk` since the catalog was written and
+# nothing has ever computed with them -- the same latent-data situation
+# `active_b` was in before the MoE work. This is their first computational use.
+#
+# It returns a DIAGNOSTIC, never a throughput multiplier, and that restraint is
+# deliberate. When experts shard across GPUs (expert parallelism), token routing
+# is skewed: "hot" experts get a disproportionate share and the slowest GPU gates
+# every decode step, which is the entire reason DeepSeek ships EPLB (an
+# expert-parallel load balancer that duplicates hot experts) and why vLLM needs
+# an explicit flag to enable rebalancing. But the only published magnitude we
+# could find is a vendor blog's unverified "recovers the 20-40% of MoE GPU cycles
+# lost to hot experts" -- not a primary measurement.
+#
+# Turning that into a coefficient would do two wrong things at once: put an
+# unsourced number into the engine, and DOUBLE-COUNT, because
+# `_SPAN_BW_SHARE_EXP` is fitted to a real rack curve that already contains
+# whatever imbalance that deployment suffered. So the cost stays in the measured
+# exponent and this function names the risk, quantifies only what is actually
+# computable, and cites what it cannot.
+def routing_exposure(model_name: str, gpus_per_copy: int,
+                     batch_tokens: int = 1) -> dict | None:
+    """Expert-routing load-balance exposure for an MoE copy sharded over GPUs.
+
+    Returns ``None`` for a dense model (nothing to route). The computable part is
+    the balls-in-bins spread for UNIFORM routing, which is a LOWER BOUND on real
+    imbalance -- real routers are skewed, which is what EPLB exists to fix.
+    """
+    arch = MODEL_ARCH.get(model_name) or {}
+    experts = arch.get("experts")
+    topk    = arch.get("topk")
+    if not experts or not topk:
+        return None
+    g = max(int(gpus_per_copy), 1)
+    shards = min(g, int(experts))                     # experts shard at most 1/GPU
+    experts_per_gpu = experts / shards
+    # Expert activations per GPU per decode step under uniform routing.
+    acts_per_gpu = batch_tokens * topk / shards
+    # Relative spread of per-GPU load, balls-in-bins: CV = sqrt((1 - 1/s)/acts).
+    cv = math.sqrt(max(0.0, 1.0 - 1.0 / shards) / acts_per_gpu) if acts_per_gpu > 0 else 0.0
+    # Below ~8 activations/GPU/step the spread dominates and a step waits on
+    # whichever GPU drew the hot experts; above it, large batches average out.
+    exposed = acts_per_gpu < 8.0
+    return {
+        "experts":          int(experts),
+        "topk":             int(topk),
+        "shared_experts":   int(arch.get("shared_experts") or 0),
+        "ep_shards":        shards,
+        "experts_per_gpu":  experts_per_gpu,
+        "acts_per_gpu":     acts_per_gpu,
+        "imbalance_cv":     cv,
+        "exposed":          exposed,
+        "note": (
+            f"{experts} experts, top-{topk}, sharded over {shards} GPUs = "
+            f"{experts_per_gpu:.0f} experts/GPU and {acts_per_gpu:.1f} expert "
+            f"activations/GPU per step (uniform-routing spread ±{cv:.0%}). "
+            + ("LOW batch: a step waits on whichever GPU drew the hot experts, so "
+               "an expert-parallel load balancer (DeepSeek EPLB / vLLM --enable-eplb) "
+               "is load-bearing here, not an optimisation."
+               if exposed else
+               "Batch is large enough that routing averages out; imbalance is a "
+               "tail-latency concern rather than a throughput one.")
+            + " Cost is NOT added on top: the concurrency exponent is fitted to a "
+              "real rack curve that already includes this deployment's imbalance."
+        ),
+    }

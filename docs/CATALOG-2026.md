@@ -1436,3 +1436,18 @@ MEMORY figure — always pair it with per-user tok/s").
 **Not fixed here because it regenerates the golden baseline** — `Llama-3.1-405B` and
 `Llama-3.3-70B` both span GPUs in baseline rows, so this is a G0-class change needing its
 own `pre-*.json` copy and a row-by-row diff. Flagged for decision.
+
+### 2026-11-06 (later) — contention fixed; see docs/CONTENTION-CHANGE.md
+
+The flat-per-user defect flagged above is **fixed**, and fixing it surfaced a second bug
+(co-residency was billed at full packing density against the whole fleet's user count),
+a KV-provisioning gap (capacity sized against 100% of nameplate VRAM; now a documented
+90% serving reserve), and the first use of `experts`/`topk` in `routing_exposure()` — a
+diagnostic, deliberately not a cost multiplier, because the only published figure for
+expert-imbalance is a vendor blog's unverified 20–40%.
+
+The spanning concurrency exponent (0.7364) and a contention-free knee (5.36 sessions/GPU)
+are both calibrated on the published DeepSeek-R1 GB300 NVL72 curve, which now reproduces
+within 11% across all three of its points rather than at a single one. 43 of 90 baseline
+rows moved; `scripts/tco_golden_baseline.pre-contention.json` holds the pre-change copy
+and `docs/CONTENTION-CHANGE.md` explains every group. Suite 25/25.
