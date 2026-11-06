@@ -1131,3 +1131,75 @@ they ship their own modeling code with `auto_map` naming
 expectations are unknown, and the Super-VL is `modelopt_mixed` with almost no
 quantized tensors in its first shard. Attempt only with a load+generate check as
 the acceptance test, never a successful load.
+
+## 2026-11-06 — both Nemotron VLMs: still unusable, and one of them took the box down
+
+Attempted with load+generate as the acceptance test, per the rule that a successful
+load is not evidence. Neither reached generation. The two have **different**
+blockers, and neither is the one the audit predicted.
+
+### Nemotron-3.5-Bolt-74B-A9B-24GB — two stacked blockers
+
+Its `quantization_config` is not NVFP4 at all, despite the family naming:
+
+    quant_algo: "Q8_0"   packing: "ggml"   group_size: 32
+    effective_bits: 8.5  block_payload_bytes: 34     (3 config groups)
+
+That is **GGUF/llama.cpp-style Q8_0 blocking in safetensors clothing** — 32 bytes of
+payload plus a 2-byte scale per 34-byte block, which is why its shards carry U8
+`weight` tensors with *no* accompanying scale tensors (the scales live inside the
+block payload). `grep -ril "modelopt|nvfp4|dequant|quantiz" *.py` over its twelve
+bundled modeling files returns **nothing**, so the remote code does not dequantize
+either. transformers has no ggml path in `from_pretrained`.
+
+It never gets that far regardless:
+
+    ImportError: mamba-ssm is required by the Mamba model but cannot be imported
+
+`mamba-ssm` publishes **no aarch64 wheel** — 2.3.2.post1 is a source tarball
+requiring a CUDA compile against sm_121. The processor builds fine
+(`NemotronH_Omni_Reasoning_V3Processor`); the model does not.
+
+### Nemotron-3.5-Super-VL-120B — caused a global OOM
+
+This one gets *past* Mamba (it falls back to the naive SSM implementation rather
+than raising), and then:
+
+    Unknown quantization type, got modelopt_mixed - ... Hence, we will skip the
+    quantization.
+
+That is the exact garbage signature this document records for Gemma-4. But the
+attempt did something worse than produce garbage, and this is the part worth
+keeping:
+
+**A skipped quantization widens the memory footprint far beyond the file size.**
+The checkpoint is 75.1 GB on disk. With quantization skipped, the load reached
+**146 GB total-vm** and triggered a kernel OOM-kill that reaped the loading
+process, **`systemd --user` for uid 1000**, `gb10-switch.service`, `pipewire`, the
+Streamlit demo and an in-flight model download. The box did not need a power reset
+this time, but losing the user systemd manager means **no user unit can be started
+until root restarts `user@1000.service`** — there is no passwordless sudo here, so
+:8000 had to be restored by running `switch_server.py` directly, unsupervised.
+
+**Consequences for the guards, written down because this was not obvious:**
+
+1. `precision_compatible()` refusing an unsupported `quant_method` **before loading**
+   is a *memory-safety* property, not only a correctness one. The refusal is what
+   stands between this box and a global OOM. Do not bypass it in a scratch script
+   to "just see what happens" — that is exactly what happened here.
+2. `mem_guard._MEASURED_GB` (on-disk size) is **not** a valid footprint proxy for a
+   checkpoint whose quantization will be skipped. File size is a *lower* bound in
+   that case, and the real figure was 1.9x it. Measured size is only meaningful for
+   a checkpoint that will load *as* quantized.
+3. The one-model rule was not violated — nothing else held the GPU — and the guard
+   still would have refused this model through the UI. The failure was entirely in
+   going around it.
+
+### Status of the vision track
+
+Unchanged: **no runnable VLM.** Both real VLMs on disk are blocked, Gemma-4's
+conversion fails on module-path naming (see the entry above), and all six configured
+vision entries are encoders. `benchmark_vlm()` stays implemented and unreachable.
+The honest options are vLLM (which serves these models correctly) or
+gb10-markets' Qwen3.6-35B, which is natively a VLM with its tower disabled by one
+flag — not the HF benchmark path.

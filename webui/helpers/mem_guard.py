@@ -75,6 +75,15 @@ _MODEL_PARAMS_B: list[tuple[str, float]] = [
 # than params x 0.5. Under-stating the footprint is the DANGEROUS direction on a
 # 121 GB unified pool, so a measurement always wins over the flat estimate.
 # Mirrors MODEL_CATALOG["disk_gb"] in tco_engine.py — keep the two in step.
+#
+# ⚠️ Valid ONLY for a checkpoint that will load *as* quantized. If transformers
+# does not implement the checkpoint's quantization it prints "we will skip the
+# quantization" and materialises the model at full width, so the on-disk size
+# becomes a LOWER BOUND, not an estimate. Measured 2026-11-06: the 75.1 GB
+# Nemotron-3.5-Super-VL reached 146 GB total-vm that way and triggered a global
+# OOM-kill. That is why precision_compatible() refuses an unsupported
+# quant_method BEFORE loading — the refusal is a memory-safety property, not
+# just a correctness one.
 _MEASURED_GB: list[tuple[str, float]] = [
     ("laguna-s-2.1",                 99.8),   # 92.9 GiB measured; flat FP4 said 59.0
     ("nemotron-3-super-120b",        80.4),   # measured; flat FP4 said 60.0
