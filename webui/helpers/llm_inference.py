@@ -141,11 +141,25 @@ def _estimate_params_b(model_name: str) -> float:
     purpose — Mixtral-8x7B activates ~12.9B params per token (compute) but loads
     all 46.7B (memory). Keep them separate; do not "reconcile" the values.
     """
+    import re
     n = model_name.lower()
+
+    # Modern MoE names encode their own ACTIVE parameter count: 30B-A3B,
+    # 120B-A12B, 26B-A4B, 235B-A22B. Read it rather than keeping a hand-list in
+    # step. This must run before the generic suffixes below, which would match
+    # the TOTAL size ("30b" in "30b-a3b") and overstate compute by ~10x.
+    m = re.search(r"[-_]a(\d+(?:\.\d+)?)b", n)
+    if m:
+        return float(m.group(1))
+
     for key, val in [
         ("mixtral", 12.9), ("phi-4", 14.0), ("phi-3", 3.8),
+        # 2026 catalog, explicit where the name does not carry "aNb":
+        ("laguna", 8.0),           # 118B total / 8B active
         ("1.1b", 1.1), ("1.5b", 1.5), ("3.8b", 3.8),
-        ("72b", 72.0), ("70b", 70.0), ("32b", 32.0),
+        ("0.6b", 0.6), ("0.5b", 0.5),
+        ("120b", 12.0), ("72b", 72.0), ("70b", 70.0),
+        ("32b", 32.0), ("27b", 27.0), ("26b", 4.0),
         ("14b", 14.0), ("13b", 13.0), ("8b", 8.0),
         ("7b", 7.0), ("3b", 3.0), ("1b", 1.0),
     ]:

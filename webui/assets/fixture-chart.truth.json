@@ -1,13 +1,13 @@
 {
  "series": {
   "Qwen2.5-7B BF16": 13.1,
-  "Qwen3-8B NVFP4": 36.4,
-  "Qwen3.6-35B-A3B FP8": 61.0
+  "Qwen3-8B NVFP4": 38.8,
+  "Qwen3.6-35B-A3B FP8": 50.8
  },
  "title": "Single-stream decode on GB10",
  "units": "tokens per second",
  "tallest_label": "Qwen3.6-35B-A3B FP8",
- "tallest_value": 61.0,
+ "tallest_value": 50.8,
  "shortest_label": "Qwen2.5-7B BF16",
  "shortest_value": 13.1
 }

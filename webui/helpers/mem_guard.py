@@ -30,7 +30,6 @@ _MODEL_PARAMS_B: list[tuple[str, float]] = [
     ("nemotron-3-super-120b",       120.0),
     ("nemotron-3.5-super-vl-120b",  120.0),
     ("nemotron-3.5-bolt-74b",        74.0),
-    ("nemotron-3.5-bolt-e4b",         4.0),
     ("nemotron-3.5-lightning-30b",   30.0),
     ("gemma-4-26b",                  26.0),
     ("qwen3.6-35b-a3b",              35.0),
@@ -47,12 +46,9 @@ _MODEL_PARAMS_B: list[tuple[str, float]] = [
     ("tinyllama",      1.1),
     ("phi-4",         14.0),
     ("phi-3",          3.8),
-    ("qwen3-8b",       8.0),
-    ("qwen3.5-35b-a3b", 35.0),  # MoE: 35B total weights load (3B active)
     ("qwen3-30b-a3b",  30.0),   # MoE: 30B total weights load (3B active)
     ("qwen2.5-72b",   72.0),
     ("qwen2.5-70b",   70.0),
-    ("qwen2.5-32b",   32.0),
     ("qwen2.5-14b",   14.0),
     ("qwen2.5-7b",     7.0),
     ("llama-3.3-70b", 70.0),
@@ -87,6 +83,12 @@ _MEASURED_GB: list[tuple[str, float]] = [
     # waved through a load 9 GB larger than it believed.
     ("nemotron-3.5-super-vl-120b",   75.1),   # measured 2026-11-05
     ("nemotron-3.5-bolt-74b",        24.1),   # measured; flat FP4 said 37.0 (over-stated)
+    # Also UNDER-stated, found 2026-11-06. Same mixed-precision release pattern:
+    # only part of the checkpoint is NVFP4, so the flat 0.5 byte/param estimate
+    # comes in below the real file. Both are refused by precision_compatible
+    # today (ModelOpt), but the guard must not believe them smaller than they are.
+    ("nemotron-3.5-lightning-30b",   21.6),   # measured; flat FP4 said 16.5
+    ("gemma-4-26b",                  18.8),   # measured; flat FP4 said 14.3
 ]
 
 

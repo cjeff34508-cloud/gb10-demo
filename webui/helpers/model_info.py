@@ -303,7 +303,15 @@ def precision_compatible(model_name: str, precision: str) -> tuple[bool, str]:
     Not Compatible rather than silently switching precision and running.
     """
     name = (model_name or "").upper()
-    prequant_nvfp4 = "NVFP4" in name or "NVF4" in name
+    # Decide from the checkpoint's own config, not its name. A filename test
+    # calls `*-w4a16` (int4) "not NVFP4" and happily offers it at BF16, and
+    # calls a renamed directory NVFP4 when it is not. The name is kept only as
+    # a fallback for a checkpoint that is not on disk to be inspected.
+    _pq_m, _pq_f = checkpoint_quant_fingerprint(model_name)
+    prequant_nvfp4 = (
+        (_pq_f or "").startswith("nvfp4")
+        or (_pq_m is None and ("NVFP4" in name or "NVF4" in name))
+    )
     if prequant_nvfp4 and precision.upper() not in ("FP4", "NVFP4"):
         return False, "pre-quantized NVFP4 checkpoint — only runs at FP4/NVFP4"
 
@@ -315,12 +323,13 @@ def precision_compatible(model_name: str, precision: str) -> tuple[bool, str]:
     # produced '0-1 way/radius housing t[i deる'. A benchmark would have recorded
     # a throughput number from a broken model, which is the one outcome this
     # suite must never produce. Refuse before loading.
-    _qm = checkpoint_quant_method(model_name)
-    if _qm and _qm not in _HF_SUPPORTED_QUANT:
+    _qm, _qf = checkpoint_quant_fingerprint(model_name)
+    if _qm and (_qm, _qf) not in _HF_SUPPORTED_QUANT:
+        _what = f"'{_qm}'" + (f" (format '{_qf}')" if _qf else "")
         return False, (
-            f"checkpoint is quantized with '{_qm}', which transformers "
-            f"{_tf_version()} does not implement — it would silently skip "
-            f"quantization, load as BF16 and generate garbage. This model runs "
+            f"checkpoint is quantized with {_what}, which transformers "
+            f"{_tf_version()} cannot honour correctly on this stack — it loads "
+            f"and reports success, then generates garbage. This model runs "
             f"correctly under vLLM (which is how the sibling projects serve it), "
             f"not through the HF benchmark path."
         )
@@ -347,8 +356,14 @@ def precision_compatible(model_name: str, precision: str) -> tuple[bool, str]:
 # throughput for a broken model. That is the one result this suite must never
 # produce, so anything not on this list is refused before loading. All of them
 # serve correctly under vLLM — which is the point, not a workaround.
+# (quant_method, format) pairs. The FORMAT half is load-bearing: the method
+# `compressed-tensors` covers both the NVFP4 packing that works and the int4
+# packing that does not, so a guard keyed on the method alone waves the garbage
+# case straight through to a benchmark number.
+#   compressed-tensors / nvfp4-pack-quantized  -> coherent (nvidia/Qwen3-8B-NVFP4)
+#   compressed-tensors / pack-quantized (int4) -> GARBAGE, loads "successfully"
 _HF_SUPPORTED_QUANT = {
-    "compressed-tensors",
+    ("compressed-tensors", "nvfp4-pack-quantized"),
 }
 
 
@@ -360,8 +375,14 @@ def _tf_version() -> str:
         return "(unknown)"
 
 
-def checkpoint_quant_method(model_name: str) -> str | None:
-    """`quant_method` declared by a local checkpoint's config.json, or None.
+def checkpoint_quant_fingerprint(model_name: str) -> tuple[str | None, str | None]:
+    """`(quant_method, format)` declared by a local checkpoint's config.json.
+
+    Both halves are needed to decide whether this HF stack can run a checkpoint.
+    `compressed-tensors` is the method for BOTH the NVFP4 packing that works and
+    the int4 `pack-quantized` packing that loads successfully and then emits
+    garbage, so the format is what separates them. Returns (None, None) when the
+    checkpoint is not on disk or declares no quantization.
 
     Reads the file directly rather than via AutoConfig: this runs inside the
     pre-load guard, so it must be cheap and must not import the model's remote
@@ -369,30 +390,44 @@ def checkpoint_quant_method(model_name: str) -> str | None:
     """
     import json
     from pathlib import Path
+
+    def _read(cfg_path) -> tuple[str | None, str | None] | None:
+        """(method, format) for one config.json, or None if it is unreadable."""
+        try:
+            c = json.loads(cfg_path.read_text())
+        except Exception:
+            return None
+        q = (c.get("quantization_config")
+             or (c.get("text_config") or {}).get("quantization_config"))
+        if not q:
+            return (None, None)
+        return (q.get("quant_method"), q.get("format"))
+
     # Accept a direct checkpoint path as well as an HF id: callers (and test
     # harnesses) legitimately hold either, and silently returning None for a path
     # routed a compressed-tensors checkpoint down the bitsandbytes branch.
     _direct = Path(model_name or "")
     if _direct.is_dir() and (_direct / "config.json").exists():
-        try:
-            c = json.loads((_direct / "config.json").read_text())
-        except Exception:
-            return None
-        q = c.get("quantization_config") or (c.get("text_config") or {}).get("quantization_config")
-        return (q or {}).get("quant_method")
+        return _read(_direct / "config.json") or (None, None)
+
     slug = (model_name or "").replace("/", "--")
     base = Path.home() / "gb10-demo" / "models"
-    for sub in ("llm-models", "vlm-models", "narrator-models"):
+    for sub in ("llm-models", "vlm-models", "narrator-models", "cnn-models"):
         cfg = base / sub / slug / "config.json"
         if not cfg.exists():
             continue
-        try:
-            c = json.loads(cfg.read_text())
-        except Exception:
-            return None
-        q = c.get("quantization_config") or (c.get("text_config") or {}).get("quantization_config")
-        return (q or {}).get("quant_method")
-    return None
+        got = _read(cfg)
+        # One malformed config must not abort the search and report the
+        # checkpoint as unquantized — that fails OPEN, which is the direction
+        # this guard exists to prevent.
+        if got is not None:
+            return got
+    return (None, None)
+
+
+def checkpoint_quant_method(model_name: str) -> str | None:
+    """`quant_method` alone, for callers that only route on the method."""
+    return checkpoint_quant_fingerprint(model_name)[0]
 
 
 def lookup_model_info(name: str) -> dict | None:
@@ -441,6 +476,14 @@ MODEL_INFO['poolside/Laguna-S-2.1-NVFP4'] = {
 }
 
 for _k, _v in {
+    # Plain BF16 additions from the 2026-11-05 catalog rebuild. These MUST be
+    # here: designed_precision() is what tells llm_inference a checkpoint is
+    # BF16-native, and without an entry a requested FP16 becomes a raw float16
+    # cast on BF16-trained activations -> inf/NaN -> a plausible-looking
+    # throughput number from a broken model. FP16 is pre-checked in the UI, so
+    # the gap was reachable with default settings.
+    'Qwen/Qwen3-0.6B': ('BF16', 'released in BF16; small enough to run any precision well'),
+    'Qwen/Qwen3-8B':   ('BF16', 'released in BF16; the BF16 half of the NVFP4-vs-BF16 pair'),
     'nvidia/Gemma-4-26B-A4B-NVFP4': ('NVFP4', 'pre-quantized NVFP4 checkpoint; loads only at FP4/NVFP4'),
     'Qwen/Qwen3.8-27B-FP8': ('FP8', 'released as FP8; block-FP8 weights'),
     'nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4': ('NVFP4', "pre-quantized NVFP4; NVIDIA's DGX Spark build"),

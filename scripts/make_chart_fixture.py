@@ -14,11 +14,41 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 # Real measurements from this box, so the fixture doubles as a talking point.
-DATA = {
-    "Qwen2.5-7B BF16": 13.1,
-    "Qwen3-8B NVFP4": 36.4,
-    "Qwen3.6-35B-A3B FP8": 61.0,
+# READ from webui/data/vllm_reference.json rather than hardcoded: the figures
+# were transcribed once and then drifted (the chart said 36.4 and 61.0 while the
+# reference file said 38.8 and 50.8), so a customer-facing chart captioned
+# "measured on GB10" disagreed with the number the TCO tab used for the same
+# model in the same session. Deriving it means that cannot recur.
+_REF = Path(__file__).resolve().parent.parent / "webui" / "data" / "vllm_reference.json"
+_LABELS = {                      # capture key -> short bar label
+    "qwen2.5-7b":          "Qwen2.5-7B BF16",
+    "qwen3-8b-nvfp4":      "Qwen3-8B NVFP4",
+    "qwen3.6-35b-a3b-fp8": "Qwen3.6-35B-A3B FP8",
 }
+
+
+def _single_stream(cap: dict) -> float | None:
+    """n=1 per-user tok/s from a capture, or None."""
+    for r in cap.get("per_n") or []:
+        if r.get("n_users") == 1 and r.get("per_user_tps"):
+            return float(r["per_user_tps"])
+    return None
+
+
+_caps = (json.loads(_REF.read_text()).get("captures") or {})
+DATA = {}
+for _k, _label in _LABELS.items():
+    _v = _single_stream(_caps.get(_k) or {})
+    if _v is not None:
+        DATA[_label] = round(_v, 1)
+if len(DATA) < 2:
+    # Fail loudly. Drawing a chart captioned as a measurement from stale or
+    # missing data is the failure this script exists to prevent.
+    raise SystemExit(
+        f"refusing to draw: only {len(DATA)} of {len(_LABELS)} captures have an "
+        f"n=1 level in {_REF}. Run scripts/recapture_reference.sh first."
+    )
+print("fixture values from vllm_reference.json:", DATA)
 TITLE = "Single-stream decode on GB10"
 UNITS = "tokens per second"
 COLORS = [(137, 135, 129), (42, 120, 214), (0, 131, 0)]

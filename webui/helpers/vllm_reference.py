@@ -2,7 +2,7 @@
 Loader for the captured vLLM production-reference data.
 
 The demo NEVER runs vLLM in-process (one heavy GPU workload at a time, and vLLM
-lives only in the qwen-hermes Docker container). Instead, an operator runs
+runs in a separate container). Instead, an operator runs
 ``scripts/capture_vllm_reference.py`` offline against the running container, which
 writes ``webui/data/vllm_reference.json``. The Streamlit app only *reads* that file
 here — so a missing file simply means "no real serving data captured yet" and the UI
@@ -107,6 +107,8 @@ def measured_tps(catalog_name: str) -> tuple[float | None, str]:
     row1 = next((r for r in rows if r.get("n_users") == 1), None)
     if not row1:
         return None, f"capture '{key}' has no n=1 level"
+    if not row1.get("per_user_tps"):
+        return None, f"capture '{key}' n=1 row has no per_user_tps"
     ts = (cap.get("timestamp") or "")[:10]
     return float(row1["per_user_tps"]), (
         f"measured on this box via vLLM — {cap.get('precision','?')}, "
@@ -165,3 +167,40 @@ def anchored_models() -> list[str]:
     except Exception:
         pass
     return out
+
+
+def capture_for_model(model_ref: str) -> tuple[str | None, dict | None]:
+    """``(capture_key, capture)`` for the model the user actually benchmarked.
+
+    Accepts an HF repo id (what the Benchmark tab holds) or a MODEL_CATALOG key
+    (what the TCO tab holds), and resolves HF id -> catalog key through
+    ``tco_engine.BENCHMARKABLE`` before the capture map.
+
+    Exists because the serving-reference and production-delta panels used
+    ``next(iter(captures))``, i.e. whichever capture happened to be first in the
+    file. Benchmarking the NVFP4 8B then showed a July BF16 Qwen2.5-7B serving
+    table, and the two November captures could never be reached at all.
+    Returns (None, None) when this model has no capture — the caller must then
+    say so rather than substitute another model's measurement.
+    """
+    if not model_ref:
+        return None, None
+    caps = (load_vllm_reference() or {}).get("captures") or {}
+
+    cands = [model_ref]
+    try:
+        from .tco_engine import BENCHMARKABLE
+        mapped = BENCHMARKABLE.get(model_ref)
+        if mapped:
+            cands.append(mapped)
+    except Exception:
+        pass
+
+    for c in cands:
+        key = _CATALOG_TO_CAPTURE.get(c)
+        if key and key in caps:
+            return key, caps[key]
+    # last resort: the model_ref IS a capture key
+    if model_ref in caps:
+        return model_ref, caps[model_ref]
+    return None, None
