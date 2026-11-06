@@ -168,6 +168,40 @@ def _estimate_params_b(model_name: str) -> float:
     return 7.0
 
 
+def smallest_local_model(candidates: list[str] | None = None) -> str | None:
+    """Smallest model actually present on this box, by parameter count.
+
+    Used by any scenario that has to RUN something but is not itself a
+    measurement of a particular model — concurrency being the case that matters.
+    Those tests want the cheapest real model, not the biggest: the quantity under
+    test is how sessions pack into memory, and a 0.6B model answers that in
+    seconds where a 14B spends minutes loading to tell you the same thing.
+
+    Returns None when nothing resolves on disk, so callers can say so rather
+    than guessing a name.
+    """
+    import json
+    from pathlib import Path as _P
+    from .mem_guard import params_b
+
+    if candidates is None:
+        try:
+            cfg = json.loads(
+                (_P.home() / "gb10-demo" / "config" / "model-lists.json").read_text())
+            candidates = cfg.get("llm") or []
+        except Exception:
+            return None
+    present = [m for m in candidates if _local_path(m) != m]
+    if not present:
+        return None
+    # Prefer a plain checkpoint: a pre-quantized NVFP4 model only loads at
+    # FP4/NVFP4, which would silently constrain the precision of a test whose
+    # subject is concurrency, not precision.
+    from .model_info import checkpoint_quant_fingerprint
+    plain = [m for m in present if checkpoint_quant_fingerprint(m)[0] is None]
+    return min(plain or present, key=params_b)
+
+
 class LLMInference:
     """LLM inference wrapper with load / prefill / decode phase tracking."""
 
@@ -602,6 +636,15 @@ class LLMInference:
             metrics.business_output["decode_ms"] = round(decode_ms, 2)
             metrics.business_output["load_ms"] = round(self._load_ms, 2)
             metrics.business_output["tokens_per_sec"] = round(tokens_per_sec, 1)
+            # Split aggregate from per-user. `tokens_per_sec` counts every
+            # sequence in the batch, so at batch_size=N it is the AGGREGATE and
+            # each user sees 1/N of it. The vLLM captures in webui/data record
+            # exactly this pair, so reporting both makes an on-box concurrency
+            # run directly comparable to the real serving reference instead of
+            # a number that silently means something different at batch 1 vs 16.
+            metrics.business_output["aggregate_tps"] = round(tokens_per_sec, 1)
+            metrics.business_output["per_user_tps"] = round(
+                tokens_per_sec / batch_size if batch_size else tokens_per_sec, 1)
 
             # --- Serving metrics ---
             _qps_val  = batch_size / (avg_total_ms / 1000) if avg_total_ms > 0 else 0

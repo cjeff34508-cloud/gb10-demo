@@ -119,127 +119,102 @@ class MemoryStress:
             free_cuda_memory()
 
     @staticmethod
-    def concurrent_models_benchmark(
-        num_models: int = 2,
-        model_size_gb: float = 10.0,
-        precision: str = "FP32",
+    def dual_model_serving_benchmark(
+        precision: str = "BF16", models: list | None = None
     ) -> BenchmarkMetrics:
+        """Two DIFFERENT real models co-resident, each asked to generate.
+
+        Replaces a synthetic version that allocated two 10 GB tensors of
+        random noise and multiplied them in place. That measured arithmetic on
+        random numbers; this measures the thing the name claims — whether the
+        box can hold two models at once and serve from both, which is the real
+        enterprise pattern (e.g. a chat model beside a code model).
+
+        Uses the two SMALLEST models present, because the question is co-residency
+        and footprint, not which model is fastest.
         """
-        Simulate N concurrent user sessions by loading N model tensors and
-        running them sequentially. Reports whether they fit, spill detection,
-        and per-model throughput.
-        """
-        metrics = BenchmarkMetrics(f"{num_models} Concurrent Models", precision)
+        from .llm_inference import LLMInference, _local_path, smallest_local_model
+        from .mem_guard import params_b
+
+        metrics = BenchmarkMetrics("Dual Model Serving", precision)
         total_vram = get_total_vram_mb()
-        models = concurrent_results = None  # predeclare for finally cleanup
 
-        try:
-            if not torch.cuda.is_available():
-                metrics.error = "No CUDA device"
-                return metrics
-
-            dtype_map = {
-                "FP32": (torch.float32, 4), "FP16": (torch.float16, 2),
-                "BF16": (torch.bfloat16, 2), "FP64": (torch.float64, 8),
-            }
-            if precision not in dtype_map:
-                metrics.error = f"Unsupported precision: {precision}"
-                return metrics
-            dtype, element_size = dtype_map[precision]
-
-            model_bytes = model_size_gb * 1024 * 1024 * 1024
-            elements_per_model = int(model_bytes / element_size)
-            required_vram_mb = num_models * model_size_gb * 1024
-
-            # Detect spill before attempting load
-            spills = total_vram > 0 and required_vram_mb > total_vram * 0.95
-
-            # Hard ceiling: NEVER let this benchmark allocate past 120 GB. On this
-            # unified-memory box an overrun DEADLOCKS the kernel (hangs → hard reset)
-            # instead of raising a clean CUDA OOM, so the try/except below cannot be
-            # relied on. Cap against 120 GB AND what is actually free right now (other
-            # projects/containers may hold unified memory) — stop early and report the
-            # limit instead of hitting it.
-            CONCURRENCY_CAP_GB = 120.0
+        if models is None:
+            import json
+            from pathlib import Path as _P
             try:
-                free_bytes, _ = torch.cuda.mem_get_info()
-                free_mb = free_bytes / 1024 / 1024
+                cfg = json.loads(
+                    (_P.home() / "gb10-demo" / "config" / "model-lists.json").read_text())
+                present = [m for m in (cfg.get("llm") or []) if _local_path(m) != m]
             except Exception:
-                free_mb = total_vram if total_vram > 0 else CONCURRENCY_CAP_GB * 1024
-            safe_ceiling_mb = min(free_mb * 0.95, CONCURRENCY_CAP_GB * 1024)
+                present = []
+            # two smallest DISTINCT checkpoints
+            models = sorted(set(present), key=params_b)[:2]
 
-            torch.cuda.reset_peak_memory_stats()
-            torch.cuda.empty_cache()
+        if len(models) < 2:
+            metrics.error = ("Needs two models on disk; found "
+                             f"{len(models)}. Download another via scripts/model-downloader.py")
+            return metrics
 
-            models = []
-            loaded = 0
-            for i in range(num_models):
-                # Preflight: would loading this copy cross the safe ceiling? Stop, don't hang.
-                if (i + 1) * model_size_gb * 1024 > safe_ceiling_mb:
-                    spills = True
+        loaded, infs, per_model = 0, [], []
+        try:
+            for name in models:
+                inf = LLMInference(name, precision, max_tokens=32)
+                if not inf.load_model():
+                    metrics.error = (f"{name} failed to load at {precision}: "
+                                     f"{getattr(inf, 'load_block_reason', '') or 'see log'}")
                     break
-                try:
-                    model_tensor = torch.randn(elements_per_model, dtype=dtype, device="cuda")
-                    models.append(model_tensor)
-                    loaded += 1
-                except RuntimeError:
-                    # OOM — record partial load (secondary net; discrete-CUDA behaviour)
-                    spills = True
-                    break
+                infs.append(inf)
+                loaded += 1
 
-            torch.cuda.synchronize()
-            memory_loaded_mb = MemoryStress.get_used_memory_mb()
+            if loaded == 2:
+                t0 = time.perf_counter()
+                for inf in infs:
+                    txt = inf.generate_text("Summarise in one sentence why "
+                                            "memory bandwidth limits decode speed.",
+                                            max_new_tokens=32)
+                    per_model.append({
+                        "model": inf.model_name,
+                        "params_b": params_b(inf.model_name),
+                        "chars": len(txt or ""),
+                        "coherent": bool(txt and sum(c.isascii() for c in txt) / max(len(txt), 1) > 0.9),
+                    })
+                metrics.latency_ms = (time.perf_counter() - t0) * 1000
 
-            latencies = []
-            for _ in range(3):
-                if torch.cuda.is_available():
-                    # Each session gets its own CUDA stream — true concurrent GPU execution.
-                    # Compute IN PLACE: `model_t * 2.0 + 1.0` would allocate a second
-                    # full-size tensor per session and, held across all N streams at once,
-                    # DOUBLE peak memory vs. the projection (the crash bug). In-place keeps
-                    # the concurrent-stream workload but allocates nothing extra, so peak
-                    # ≈ the loaded weights and matches the sidebar estimate.
-                    streams = [torch.cuda.Stream() for _ in range(loaded)]
-                    torch.cuda.synchronize()
-                    start = time.perf_counter()
-                    for model_t, stream in zip(models, streams):
-                        with torch.cuda.stream(stream):
-                            model_t.mul_(2.0).add_(1.0)
-                    for s in streams:
-                        s.synchronize()
-                    latencies.append((time.perf_counter() - start) * 1000)
-                else:
-                    start = time.perf_counter()
-                    for m in models:
-                        m.mul_(2.0).add_(1.0)
-                    latencies.append((time.perf_counter() - start) * 1000)
+            metrics.peak_memory_mb = get_gpu_peak_memory_mb()
+            metrics.memory_mb = metrics.peak_memory_mb
+            if metrics.latency_ms > 0:
+                metrics.throughput_samples_per_sec = loaded / (metrics.latency_ms / 1000)
 
-            avg_latency = sum(latencies) / len(latencies)
-            peak_memory_mb = get_gpu_peak_memory_mb()
-
-            metrics.latency_ms = avg_latency
-            metrics.peak_memory_mb = peak_memory_mb
-            metrics.memory_mb = memory_loaded_mb
-            metrics.throughput_samples_per_sec = loaded / (avg_latency / 1000)
-            metrics._raw_latencies = latencies
-
-            _tag_memory(metrics, "multi-user-concurrency", num_models, total_vram)
-
+            _tag_memory(metrics, "dual-model-serving", loaded, total_vram)
             metrics.business_output["models_loaded"] = loaded
-            metrics.business_output["models_requested"] = num_models
-            metrics.business_output["spills"] = spills
-            metrics.business_output["model_size_gb"] = model_size_gb
-            metrics.business_output["required_vram_gb"] = round(required_vram_mb / 1024, 1)
-
-            if spills:
+            metrics.business_output["models_requested"] = 2
+            metrics.business_output["model_names"] = list(models)
+            metrics.business_output["per_model"] = per_model
+            metrics.business_output["spills"] = loaded < 2
+            metrics.business_output["combined_gb"] = round(metrics.peak_memory_mb / 1024, 2)
+            if loaded < 2:
                 metrics.primary_bottleneck = "Memory Capacity"
-
             return metrics
 
         except Exception as e:
             metrics.error = str(e)
             return metrics
         finally:
-            # Release all loaded model tensors and intermediate results, even on OOM.
-            models = concurrent_results = None
+            for inf in infs:
+                try:
+                    inf.unload()
+                except Exception:
+                    pass
             free_cuda_memory()
+
+    # NOTE: concurrent_models_benchmark() was removed 2026-11-06. It allocated N
+    # tensors of torch.randn() noise and ran mul_().add_() across CUDA streams,
+    # reporting "samples/sec" for arithmetic on random numbers while the UI
+    # presented it as multi-user serving; the confidence panel already flagged it
+    # SYNTHETIC in red. Multi-User Concurrency now batches N real sequences
+    # through ONE real model copy (helpers/llm_inference.LLMInference.benchmark
+    # with batch_size=N), which is what continuous batching does and which
+    # reports the same per-user/aggregate pair the vLLM captures record. Dual
+    # Model Serving uses dual_model_serving_benchmark() above. Do not reinstate a
+    # synthetic stand-in for a measurement.

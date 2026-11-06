@@ -56,9 +56,19 @@ def classify_bottleneck(metrics, total_vram_mb: float = None) -> str:
         if metrics.peak_memory_mb / total_vram_mb > 0.85:
             return "Memory Capacity"
 
-    # 2. Storage / tiering — load time > 2× inference time
+    # 2. Storage / tiering — load time > 2x the inference work it enables.
+    #    The weight load is a ONE-TIME cost amortised across every session the
+    #    loaded copy then serves, so it must be compared against the total
+    #    inference work, not one request's latency. Without the batch term a
+    #    32-session concurrency run on a small model came back "Storage /
+    #    Tiering" purely because a 10.6 s cold load beat a 1.5 s request -- which
+    #    says nothing about the steady-state serving the test exists to measure.
+    #    At batch 1 (a single cold query) the two are identical, so the original
+    #    verdict is preserved exactly where it was right.
     load_ms = metrics.business_output.get("load_ms", 0)
-    if load_ms > 0 and metrics.latency_ms > 0 and load_ms > metrics.latency_ms * 2:
+    _bs = (metrics.operational_condition or {}).get("batch_size", 1) or 1
+    _work_ms = metrics.latency_ms * max(1, int(_bs))
+    if load_ms > 0 and _work_ms > 0 and load_ms > _work_ms * 2:
         return "Storage / Tiering"
 
     # 3. Kernel-intrinsic HPC classification — these workloads are bottlenecked by
