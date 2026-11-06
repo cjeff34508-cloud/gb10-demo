@@ -297,6 +297,82 @@ GPU_SPECS: dict[str, dict] = {
                  "Vendor perf/W claims (up to 30× throughput per MW, 35× lower token cost) are "
                  "workload-specific marketing and are deliberately NOT modelled here.",
     },
+
+    # --- AMD Instinct, CDNA 4 -------------------------------------------------------
+    # The MI350P is the PCIe member of the MI350 family: 128 CU (half the MI350X's 256)
+    # and 144 GB HBM3E (half the MI350X's 288 GB) on a 600 W add-in card that Dell
+    # configures at either 600 W or a 450 W cap. Two entries, because the power point
+    # is the only thing that differs and it differs PER PLATFORM — the same pattern the
+    # catalog already uses for B200/B300 "AC" vs "PC".
+    #
+    # Verified 2026-11-06 against AMD's published peaks (via StorageReview's spec table)
+    # and Dell's own XE7745 PSU-GPU configuration matrix. Sources disagreed on FP8 — one
+    # vendor listing said 288.4 TFLOPS, which is ~8x below every other source and is an
+    # error; AMD's 2.3 PFLOPS dense is used.
+    #
+    # TWO THINGS A SALES CONVERSATION MUST NOT GET WRONG:
+    #  1. Its 4-bit format is **MXFP4 (OCP microscaling)**, NOT NVIDIA's NVFP4. The
+    #     `nvfp4-pack-quantized` checkpoints this demo benchmarks will NOT run on it;
+    #     an MXFP4 model (e.g. gpt-oss-120b) is the like-for-like comparison, under ROCm
+    #     + vLLM rather than CUDA.
+    #  2. There is **no NVLink/XGMI on this card** — multi-GPU is PCIe peer-to-peer
+    #     only. In StorageReview's 2-card R7725 the cards sat behind different EPYC
+    #     sockets, so tensor-parallel traffic crossed the inter-socket link. Treat
+    #     any model that does not fit in one card's 144 GB as a PCIe-spanning case,
+    #     exactly as the RTX PRO parts are treated.
+    "MI350P": {
+        "arch": "CDNA 4", "class": "PCIe DW passive server GPU (600 W)",
+        "mem_gb": 144, "mem_type": "HBM3E", "mem_bw_gbs": 4_000,
+        "link": "PCIe Gen5 x16", "nvlink_gbs": 0, "gpu_tdp_w": 600,
+        "tflops": {
+            # AMD published peaks. FP8/FP16/BF16 give an explicit dense-and-sparse pair.
+            # MXFP4's 4.6 PFLOPS is the DENSE figure (= 2x FP8 dense, the expected ratio);
+            # AMD publishes no sparse FP4 number, so the sparse slot is left equal to
+            # dense rather than inventing 9.2 PFLOPS.
+            "FP4":  _tf(4_600),            # MXFP4 / MXFP6 both 4.6 PFLOPS dense
+            "FP8":  _tf(2_300, 4_600),     # OCP FP8 dense / structured sparsity
+            "FP16": _tf(1_150, 2_300),     "BF16": _tf(1_150, 2_300),
+            "FP32": _tf(72),               "FP64": _tf(36),
+        },
+        "notes": "CDNA 4 · 4 XCDs on one I/O die · 128 CU / 8,192 SP / 512 matrix cores · "
+                 "2,200 MHz peak · 73 B transistors (TSMC 3nm + 6nm) · 144 GB HBM3E ECC on a "
+                 "4,096-bit bus @ 4 TB/s rated · 128 MB Infinity Cache · PCIe Gen5 x16, FHFL "
+                 "dual-slot passive, 267 mm · single 12V-2x6 · 600 W, configurable to 450 W · "
+                 "SR-IOV, RAS, page retirement. "
+                 "MEASURED by StorageReview at 450 W (MAMF, one card): BF16 580 TFLOPS, "
+                 "FP8 1,120, block-scaled FP4 2,228 — i.e. roughly HALF the dense peak, which "
+                 "is the usual achievable-vs-peak gap and the figure to quote if challenged. "
+                 "Measured memory bandwidth 3,291 GB/s read / 3,204 GB/s write / ~1,280 copy "
+                 "against 4,000 rated. For consistency every GPU in this catalog carries its "
+                 "VENDOR-RATED bandwidth, so 4,000 is used here; quoting AMD measured against "
+                 "NVIDIA rated would bias the comparison. "
+                 "NO NVLink/XGMI — PCIe P2P only. 4-bit format is MXFP4, not NVFP4.",
+    },
+    "MI350P 450W": {
+        # Same silicon, power-capped. Dell ships this point in the 2U R7725, where a
+        # pair of 600 W double-wide cards cannot be cooled.
+        "arch": "CDNA 4", "class": "PCIe DW passive server GPU (450 W cap)",
+        "mem_gb": 144, "mem_type": "HBM3E", "mem_bw_gbs": 4_000,
+        "link": "PCIe Gen5 x16", "nvlink_gbs": 0, "gpu_tdp_w": 450,
+        "tflops": {
+            # Architectural peaks are unchanged by the power cap; what the cap costs is
+            # SUSTAINED compute, and AMD publishes no separate 450 W peak. The measured
+            # 450 W MAMF numbers in the notes are the honest figures for this entry.
+            "FP4":  _tf(4_600),
+            "FP8":  _tf(2_300, 4_600),
+            "FP16": _tf(1_150, 2_300),     "BF16": _tf(1_150, 2_300),
+            "FP32": _tf(72),               "FP64": _tf(36),
+        },
+        "notes": "MI350P power-capped to 450 W — the configuration Dell ships in the 2U "
+                 "R7725, and the one StorageReview actually measured. Same 144 GB HBM3E "
+                 "@ 4 TB/s rated and same architectural peaks as the 600 W entry; the cap "
+                 "costs sustained COMPUTE, not memory capacity or bandwidth. "
+                 "That matters for how this demo models things: decode is "
+                 "memory-bandwidth-bound, so a 450 W cap costs an inference workload very "
+                 "little, while compute-bound prefill and training give up real throughput. "
+                 "Measured at 450 W (MAMF): BF16 580 TFLOPS, FP8 1,120, FP4 2,228. "
+                 "NO NVLink/XGMI — PCIe P2P only. 4-bit format is MXFP4, not NVFP4.",
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -509,6 +585,13 @@ _CATALOG_ROWS: list[tuple] = [
     ("XE7745", "H200 NVL",         "H200 NVL",         1, 8, 35_000, 34_500),
     ("XE7745", "L40S",             "L40S",             1, 8, 35_000,  9_971),
     ("XE7745", "L4",               "L4",               1, 6, 35_000,  4_200),
+    # AMD MI350P at FULL 600 W. Dell's XE7745 technical guide lists the MI350P, and
+    # the installation manual's PSU-GPU configuration matrix documents 4x, 6x and 8x
+    # populations at 600 W (3,200 W or 2,400 W PSUs, support varying by redundancy
+    # mode). min_gpus is therefore 4, not 1 — Dell does not document a 1- or 2-card
+    # build in this chassis, and the flexible sizer must not invent one. Dell's own
+    # MLPerf Inference 6.1 submission used an 8x MI350P XE7745 with 2x EPYC 9655.
+    ("XE7745", "MI350P",           "MI350P 600W",      4, 8, 35_000, 30_000),
     ("XE7740", "RTX PRO 6000 BSE", "RTX Pro 6000 BSE", 1, 8, 45_000, 13_500),
     ("XE7740", "RTX PRO 4500 BSE", "RTX Pro 4500 BSE", 1, 8, 45_000,  3_800),
     ("XE7740", "H200 NVL",         "H200 NVL",         1, 8, 45_000, 34_500),
@@ -527,6 +610,11 @@ _CATALOG_ROWS: list[tuple] = [
     ("R7725", "L40S",             "L40S",             1, 2, 19_000,  9_971),
     ("R7725", "L4",               "L4",               1, 6, 19_000,  4_200),
     ("R7725", "A16",              "A16",              1, 2, 19_000,  8_000),
+    # AMD MI350P power-capped to 450 W. Dell and AMD announced R7725 support as a
+    # drop-in air-cooled option; StorageReview's hands-on ran two cards in an R7725
+    # at 450 W, which they describe as the 2U cap. Max 2, matching the other
+    # double-wide 600 W-class cards in this chassis (RTX PRO 6000 BSE, H200 NVL).
+    ("R7725", "MI350P 450W",      "MI350P 450W",      1, 2, 19_000, 30_000),
     ("R7715", "RTX PRO 6000 BSE", "RTX Pro 6000 BSE", 1, 3, 27_500, 13_500),
     ("R7715", "RTX PRO 4500 BSE", "RTX Pro 4500 BSE", 1, 3, 27_500,  3_800),
     ("R7715", "H200 NVL",         "H200 NVL",         1, 3, 27_500, 34_500),
@@ -590,6 +678,11 @@ _GPU_LINK: dict[str, tuple[str, bool, bool, str]] = {
     "L40S":             ("pcie",          False, False, "PCIe Gen4"),
     "L4":               ("pcie",          False, False, "PCIe Gen4"),
     "A16":              ("pcie",          False, False, "PCIe Gen4"),
+    # AMD MI350P has no NVLink and no XGMI/Infinity-Fabric GPU link on the PCIe
+    # card — multi-GPU is PCIe peer-to-peer, so it gets the same treatment as the
+    # RTX PRO parts: no cross-card weight spanning without a PCIe penalty.
+    "MI350P":           ("pcie",          False, False, "PCIe Gen5 (P2P)"),
+    "MI350P 450W":      ("pcie",          False, False, "PCIe Gen5 (P2P)"),
     "H200 NVL":         ("nvlink-bridge", True,  False, "NVLink bridge (2–4 way)"),
     "H200 SXM5":        ("nvlink4",       True,  True,  "NVLink-4 (SXM5)"),
     "H100 SXM5":        ("nvlink4",       True,  True,  "NVLink-4 (SXM5)"),
@@ -626,6 +719,7 @@ _ARCH_FAMILY: dict[str, str] = {
     "L40S": "Ada Lovelace", "L4": "Ada Lovelace",
     "A16": "Ampere",
     "Vera Rubin / VR200": "Rubin",
+    "MI350P": "CDNA 4", "MI350P 450W": "CDNA 4",
 }
 ARCH_COLORS: dict[str, str] = {
     "Grace-Blackwell": "#2a78d6",   # slot 1 blue   — the GB10 family
@@ -634,6 +728,7 @@ ARCH_COLORS: dict[str, str] = {
     "Ada Lovelace":    "#eda100",   # slot 4 yellow
     "Ampere":          "#1baf7a",   # slot 5 aqua
     "Rubin":           "#eb6834",   # slot 6 orange
+    "CDNA 4":          "#ed1c24",   # slot 7 red — AMD Instinct
 }
 _FALLBACK_COLOR = "#898781"  # muted ink — an unmapped family is visibly neutral, never a new hue
 
@@ -761,6 +856,9 @@ DEFAULT_SYSTEMS: list[str] = [
     "Dell PowerEdge XE8712 (GB200 NVL4)",
     "Dell PowerEdge XE9712 (GB300 NVL72)",
     "Dell PowerEdge XE9812 (Vera Rubin NVL72)",
+    # --- AMD Instinct, both power points the user asked to compare -------------------
+    "Dell PowerEdge R7725 (MI350P 450W)",           # 2U, air-cooled, 450 W cap
+    "Dell PowerEdge XE7745 (MI350P 600W)",          # 4U flexible, full 600 W, 4-8 cards
 ]
 
 # Build now, BEFORE _derive_system_specs() runs below — derivation must see the generated rows.
