@@ -253,7 +253,15 @@ class LLMInference:
                     return False
 
             elif self.precision in ("FP4", "NVFP4"):
-                if _is_prequantized_nvfp4(self.model_name):
+                # Route on what the CHECKPOINT DECLARES, not on its filename.
+                # _is_prequantized_nvfp4() matches the string "NVFP4" in the model
+                # name, so a compressed-tensors checkpoint named *-w4a16 fell
+                # through to the bitsandbytes branch and died with "The model is
+                # quantized with CompressedTensorsConfig but you are passing a
+                # BitsAndBytesConfig". Measured 2026-11-05 on
+                # RedHatAI/Qwen3-30B-A3B-Instruct-2507-quantized.w4a16.
+                if (prequantized_method(self.model_name) == "compressed-tensors"
+                        or _is_prequantized_nvfp4(self.model_name)):
                     # Pre-quantized FP4 checkpoint — weights are already packed
                     # 4-bit, so loading skips the huge BF16 staging that OOMs the
                     # Dell Pro Max GB10. NOTE: do NOT pass ignore_mismatched_sizes=True — that

@@ -369,6 +369,17 @@ def checkpoint_quant_method(model_name: str) -> str | None:
     """
     import json
     from pathlib import Path
+    # Accept a direct checkpoint path as well as an HF id: callers (and test
+    # harnesses) legitimately hold either, and silently returning None for a path
+    # routed a compressed-tensors checkpoint down the bitsandbytes branch.
+    _direct = Path(model_name or "")
+    if _direct.is_dir() and (_direct / "config.json").exists():
+        try:
+            c = json.loads((_direct / "config.json").read_text())
+        except Exception:
+            return None
+        q = c.get("quantization_config") or (c.get("text_config") or {}).get("quantization_config")
+        return (q or {}).get("quant_method")
     slug = (model_name or "").replace("/", "--")
     base = Path.home() / "gb10-demo" / "models"
     for sub in ("llm-models", "vlm-models", "narrator-models"):
