@@ -5,7 +5,9 @@ LLM / VLM / CNN / HPC workloads across precisions (FP4, FP8, FP16, FP32, FP64)
 and surfaces business-relevant output (bottleneck, TCO, hardware fit). The
 Streamlit UI is organised by **failure-mode scenario**, not by modality.
 
-> **Note:** The root `README.md` is stale (drifted on TensorRT version, model catalog, and UI organisation). Ignore it — this `CLAUDE.md` is the authoritative spec.
+> **Note:** This `CLAUDE.md` is the authoritative spec. The root `README.md` was rewritten
+> 2026-11-06 and is now accurate, but it is a front door — it summarises and defers here for
+> anything about how the engine or the guards actually behave.
 
 ## System
 
