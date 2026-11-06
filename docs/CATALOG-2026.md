@@ -1345,3 +1345,94 @@ Llama-4 in the earlier pass.
 golden-baseline rows** — the baseline pins a fixed model/system list, so new catalog entries cannot
 move it. Assertion 13 pins all six KV figures to their config-derived values, because a wrong
 `attn_layers` is silent: the model still sizes, just wrongly.
+
+---
+
+## 2026-11-06 — Realistic predicted throughput, and the first external validation
+
+**Asked:** make the predicted tok/s realistic, and answer what these models do on an
+NVL72.
+
+### The GB10 predicted figure was a counterfactual, not a rate
+
+The six frontier entries each published a GB10 number — Kimi-K3 at **2.7 tok/s**. That
+figure is "what one GB10 would decode if it could hold 1,560.9 GB of weights", and it
+cannot: it needs **17 of them**. Printed bare, next to the model's name, it reads as a
+claim about the model. It is wrong in *kind*, not degree, which makes it worse than a
+number with a wide band.
+
+**What rescues it is an algebraic accident worth stating explicitly.** The engine computes
+
+    tps_per_user = gb10_tps × (per_gpu_bw / GB10_BW_GBS) × parallel_eff
+
+and the predicted anchor *is* `GB10_BW_GBS / gb_per_token × efficiency`, so
+**`GB10_BW_GBS` cancels exactly**. The GB10 anchor is a pass-through intermediate, not an
+input — verified by sweeping the basis 50× and requiring the ratio to hold to 1e-9
+(assertion **a20**, ratio 23.4432 constant). So no projection was ever distorted by the
+counterfactual; only the *presentation* was wrong.
+
+Fix: the panel now leads with the figure on hardware that can hold the model, and demotes
+the GB10 value to the scaling basis it is, saying so in those words.
+
+| model | GB10 counterfactual | smallest platform that holds it | GB300 NVL72 |
+|---|---|---|---|
+| GLM-5.2-753B-A40B | 6.2 | **160** tok/s/user — XE8712 GB200 NVL4, TP4 | **175** |
+| Inkling-975B-A41B | 6.2 | **159** — XE8712 GB200 NVL4, TP4 | **159** |
+| DeepSeek-V4-Pro (1.6T) | 5.8 | **145** — XE9780 B300 ×8, TP4 | **150** |
+| Nemotron-3-Ultra-550B | 4.4 | **113** — XE8712 GB200 NVL4, TP4 | **123** |
+| Kimi-K3 (2.8T) | 2.7 | **61** — XE9780 B300 ×8, TP8 | **62** |
+| Inkling-975B-A41B (BF16) | 1.9 | **44** — XE9780 B300 ×8, TP8 | **45** |
+
+### The first external validation this tool has ever had
+
+The cross-hardware projection had **no** validation: this box cannot measure multi-GPU
+anything, so `scale_throughput` was pure extrapolation from a 273 GB/s single-GPU anchor.
+
+SemiAnalysis InferenceX publishes a DeepSeek-R1 671B-A37B FP4 Pareto curve on GB300 NVL72
+at **93 / 162 / 231 tok/s/user**. DeepSeek-R1 is the closest published analogue to the six
+new entries — same sparse-MoE shape, same MLA attention, 37B active — and
+`DeepSeek-R1 (671B)` is already in the catalog, so the comparison needs no new modelling.
+
+**The engine projects 233.9 tok/s/user. Published max-interactivity point: 231. Agreement
+1.2%** (assertion **a19**).
+
+The target is deliberately the **top** of the envelope, not its middle: we project at
+`n_users=1`, which *is* maximum interactivity, so the matching published point is the
+highest-interactivity one. Requiring the midpoint would be requiring the wrong answer, and
+the assertion says so in its docstring to stop a future reader "correcting" it.
+
+The data is stored in `predicted_anchors.json` under `cross_hardware_validation` with
+`used_for_calibration: false`, its URL and retrieval date. It is third-party and
+interpolated by its publisher, so **the envelope is the claim, not any single point**, and
+it must never leak into the on-box efficiency calibration — that stays four measurements
+taken here.
+
+### A finding that cuts against the rack, and should be said out loud
+
+For Kimi-K3, a single **8-GPU XE9780 (B300) is within 2.6% of a 72-GPU GB300 NVL72 on
+per-user decode** (60.6 vs 62.2 tok/s) and is **cheaper per token at every user count up
+to 1,000** ($0.14 vs $1.28 per MTok at n=1,000), because both hold one copy in one node
+and the box costs $570K against $6.2M.
+
+Per-user decode speed is set by **per-GPU bandwidth**, which the two parts nearly share;
+the rack's advantage is **capacity headroom** (45,891 vs 5,099 sessions/node), not speed.
+The honest pitch is therefore "buy the rack for concurrency", never "buy the rack to make
+one user faster".
+
+### Found, NOT fixed — bandwidth contention is skipped for every multi-GPU model
+
+`tco_engine.py:1853` sets `per_gpu_density = 0` when `gpus_per_model > 1`, and the
+contention term keys off that density, so **a model whose copy spans GPUs shows zero
+per-user degradation from 1 to 1,000 concurrent users.** Confirmed:
+
+- `Qwen2.5-7B` (TP1) correctly degrades 230.3 → 132.3 tok/s from n=1 to n=256
+- `Llama-3.1-405B` (TP8) stays **flat at 165.8** across the same sweep
+
+This is **pre-existing** and not introduced by this work, but it now matters much more:
+all six frontier entries span GPUs, so all six report a flat per-user rate at any load.
+It also contradicts the demo script's own credibility guardrail ("5,728 sessions/node is a
+MEMORY figure — always pair it with per-user tok/s").
+
+**Not fixed here because it regenerates the golden baseline** — `Llama-3.1-405B` and
+`Llama-3.3-70B` both span GPUs in baseline rows, so this is a G0-class change needing its
+own `pre-*.json` copy and a row-by-row diff. Flagged for decision.

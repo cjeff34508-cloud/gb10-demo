@@ -398,3 +398,124 @@ def predicted_models() -> list[str]:
     done = set(anchored_models())
     return [m for m in _T.MODEL_CATALOG
             if m not in done and predicted_anchor(m)[0] is not None]
+
+
+# ---------------------------------------------------------------------------
+# Where a non-fitting model can ACTUALLY run — the realistic predicted figure
+# ---------------------------------------------------------------------------
+# The GB10 predicted anchor for a 2.8T model is a COUNTERFACTUAL: 2.7 tok/s is
+# what one GB10 would decode if it could hold 1,560.9 GB of weights, and it
+# cannot -- it needs 17 of them. Published bare, that figure reads as a claim
+# about the model, and it is the single most misleading number this tool can
+# print, because it is small, specific and wrong in kind rather than in degree.
+#
+# What rescues it is an algebraic accident worth stating plainly: the engine
+# computes
+#     tps_per_user = gb10_tps * (per_gpu_bw / GB10_BW_GBS) * parallel_eff
+# and the predicted anchor IS `GB10_BW_GBS / gb_per_token * efficiency`, so
+# GB10_BW_GBS cancels exactly. The GB10 number is a pass-through intermediate,
+# not an input -- verified in scripts/smoke_tco_capacity.py::a20, which doubles
+# the basis and requires the ratio to hold. So the honest presentation is to
+# lead with the figure on hardware that can hold the model, and disclose the
+# GB10 value as the scaling basis it actually is.
+#
+# These helpers deliberately call calculate_tco() rather than re-deriving the
+# projection. A second copy of the formula would drift from the first.
+
+# Reference rack for the "what about on an NVL72?" answer. GB300 NVL72 is the
+# shipping rack-scale part and the one the third-party validation set covers.
+NVL72_REFERENCE = "Dell PowerEdge XE9712 (GB300 NVL72)"
+
+
+def validation_rows() -> dict | None:
+    """The third-party cross-hardware validation block, or None.
+
+    Third-party data, NOT used to calibrate anything — it back-tests the
+    projection against a published measurement of a same-class model on the
+    same rack, which is what this box can never measure for itself.
+    """
+    try:
+        d = json.loads(_PRED_PATH.read_text())
+    except Exception:
+        return None
+    v = d.get("cross_hardware_validation")
+    return v if isinstance(v, dict) and v.get("points") else None
+
+
+def validation_envelope(system: str = NVL72_REFERENCE) -> tuple[float, float] | None:
+    """``(min, max)`` published tok/s/user for the validation model on ``system``."""
+    v = validation_rows()
+    if not v:
+        return None
+    pts = [float(p["tps_per_user"]) for p in v["points"]
+           if p.get("system") == system and p.get("tps_per_user")]
+    return (min(pts), max(pts)) if pts else None
+
+
+def predicted_on_platform(
+    catalog_name: str,
+    system_name: str,
+    precision: str | None = None,
+    context_len: int = 4096,
+) -> dict | None:
+    """Realistic single-stream tok/s/user for ``catalog_name`` on ``system_name``.
+
+    Returns ``None`` when there is no predicted basis or the system cannot hold
+    one copy of the model at all. The returned ``tps_per_user`` is the engine's
+    own cross-hardware projection driven by the predicted GB10 basis, so it
+    carries every term the TCO tab applies: per-GPU bandwidth, tensor-parallel
+    interconnect efficiency and cross-node penalties.
+    """
+    from . import tco_engine as _T
+    if system_name not in _T.DELL_SYSTEMS:
+        return None
+    basis, _why, band = predicted_anchor(catalog_name, precision)
+    if not basis:
+        return None
+    prec = precision or _T.native_precision(catalog_name)
+    try:
+        r = _T.calculate_tco(system_name, catalog_name, prec, 1, basis,
+                             context_len=context_len)
+    except Exception:
+        return None
+    if not r.fits_single_node and r.num_nodes <= 0:
+        return None
+    frac = (band[1] / basis - 1.0) if band else 0.0
+    return {
+        "system":        system_name,
+        "tps_per_user":  r.tps_per_user,
+        "gpus_per_copy": r.gpus_per_copy,
+        "nodes_per_copy": max(1, r.num_nodes),
+        "fits_single_node": r.fits_single_node,
+        "gb10_basis":    basis,
+        "band":          (r.tps_per_user * (1 - frac), r.tps_per_user * (1 + frac)),
+        "precision":     prec,
+    }
+
+
+def smallest_fitting_platform(
+    catalog_name: str, precision: str | None = None, context_len: int = 4096
+) -> dict | None:
+    """The smallest BOX in DEFAULT_SYSTEMS that holds one copy in ONE node.
+
+    "Realistic" means the model is resident, not spread over a multi-node copy
+    where the engine (correctly) falls back to one session per copy.
+
+    Ranked by the node's GPU count first, so a 8-GPU server beats a 72-GPU rack
+    even when the rack needs a lower tensor-parallel degree. Ranking by TP
+    degree instead returns Vera Rubin NVL72 for every entry -- technically the
+    fewest GPUs per copy, but the opposite of the question being asked, which is
+    "what is the least hardware that runs this at all".
+    """
+    from . import tco_engine as _T
+    best = None
+    best_key = None
+    for s in _T.DEFAULT_SYSTEMS:
+        got = predicted_on_platform(catalog_name, s, precision, context_len)
+        if not got or not got["fits_single_node"]:
+            continue
+        key = (_T.DELL_SYSTEMS[s].get("gpus_per_node", 1),
+               got["gpus_per_copy"], -got["tps_per_user"])
+        if best_key is None or key < best_key:
+            best, best_key = got, key
+    return best

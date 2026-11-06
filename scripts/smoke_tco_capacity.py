@@ -635,6 +635,110 @@ def a18_sparsity_beats_size(report):
            f"ranking follows active params, not total")
 
 
+def a19_projection_matches_published(report):
+    """The cross-hardware projection vs THIRD-PARTY published measurements.
+
+    This is the only external check in the suite, and it covers the one thing
+    this box can never measure for itself: what a frontier MoE actually does on
+    rack-scale hardware. SemiAnalysis publishes a DeepSeek-R1 671B-A37B FP4
+    Pareto curve on GB300 NVL72 at 93 / 162 / 231 tok/s/user. DeepSeek-R1 is the
+    closest published analogue to the six 2026 frontier entries -- same sparse
+    MoE shape, same MLA attention.
+
+    We project at n_users=1, which is MAXIMUM interactivity, so the right target
+    is the TOP of the published envelope, not its middle. Requiring the midpoint
+    would be requiring the wrong answer.
+    """
+    from helpers.vllm_reference import (predicted_on_platform, validation_envelope,
+                                        NVL72_REFERENCE)
+    env = validation_envelope()
+    if not env:
+        raise Fail("no cross_hardware_validation block in predicted_anchors.json")
+    lo, hi = env
+    got = predicted_on_platform("DeepSeek-R1 (671B)", NVL72_REFERENCE, "FP4")
+    if not got:
+        raise Fail("no projection for the validation model on " + NVL72_REFERENCE)
+    tps = got["tps_per_user"]
+    # Must not fall below the published low end, and must land within 25% of the
+    # high end (n_users=1 == max interactivity == the top of the curve).
+    if tps < lo:
+        raise Fail(f"projection {tps:.1f} tok/s/user is BELOW the published "
+                   f"envelope {lo:.0f}-{hi:.0f} — the projection under-claims")
+    if abs(tps - hi) / hi > 0.25:
+        raise Fail(f"projection {tps:.1f} tok/s/user is >25% from the published "
+                   f"max-interactivity point {hi:.0f} (envelope {lo:.0f}-{hi:.0f})")
+    report("19 published-validation", True,
+           f"DeepSeek-R1 FP4 on GB300 NVL72 projects {tps:.1f} tok/s/user (TP"
+           f"{got['gpus_per_copy']}) vs published {lo:.0f}-{hi:.0f}, "
+           f"{abs(tps-hi)/hi:.1%} from the max-interactivity point")
+
+
+def a20_gb10_basis_is_pass_through(report):
+    """The GB10 anchor must be a pure pass-through, not a load-bearing input.
+
+    The UI tells the user that a non-fitting model's GB10 figure is a scaling
+    basis rather than a rate, and that 273 GB/s cancels out of the projection.
+    That claim is only true if tps_per_user is exactly linear in the basis. If
+    some later change makes the basis enter non-linearly, the UI starts lying,
+    so this pins the algebra rather than trusting the comment.
+    """
+    from helpers import tco_engine as T
+    from helpers.vllm_reference import NVL72_REFERENCE
+    m, prec = "Kimi-K3 (2.8T)", "FP4"
+    ratios = []
+    for basis in (2.0, 7.0, 100.0):
+        r = T.calculate_tco(NVL72_REFERENCE, m, prec, 1, basis, context_len=4096)
+        if r.tps_per_user <= 0:
+            raise Fail(f"no projection at basis {basis}")
+        ratios.append(r.tps_per_user / basis)
+    spread = (max(ratios) - min(ratios)) / max(ratios)
+    if spread > 1e-9:
+        raise Fail(f"tps_per_user is NOT linear in the GB10 basis "
+                   f"(ratios {ratios}) — the UI's 'scaling basis, not a rate' "
+                   f"explanation is no longer true")
+    report("20 basis-pass-through", True,
+           f"tps_per_user is exactly linear in the GB10 basis "
+           f"(ratio {ratios[0]:.4f} across a 50x basis sweep) — 273 GB/s cancels, "
+           f"so the counterfactual GB10 figure cannot distort a projection")
+
+
+def a21_frontier_has_realistic_platform(report):
+    """Every frontier entry must get a real figure on hardware that can hold it.
+
+    The point of the platform-aware predictor: a model that cannot fit a GB10
+    must still answer "how fast is it, really?" with a number from a platform
+    that can run it -- and that number must be far above the GB10
+    counterfactual, since real parts have 8-22 TB/s against the GB10's 273 GB/s.
+    """
+    from helpers.vllm_reference import (predicted_anchor, smallest_fitting_platform,
+                                        predicted_on_platform, NVL72_REFERENCE)
+    rows = []
+    for m in _G2B_KV_KIB_FP8:
+        basis, _w, _b = predicted_anchor(m)
+        if not basis:
+            raise Fail(f"{m} lost its predicted basis")
+        small = smallest_fitting_platform(m)
+        rack = predicted_on_platform(m, NVL72_REFERENCE)
+        if not small:
+            raise Fail(f"{m} has no single-node platform in DEFAULT_SYSTEMS")
+        if not rack:
+            raise Fail(f"{m} has no projection on {NVL72_REFERENCE}")
+        if small["tps_per_user"] <= basis:
+            raise Fail(f"{m}: smallest-platform {small['tps_per_user']:.1f} <= "
+                       f"GB10 counterfactual {basis:.1f} — scaling term lost")
+        # Sanity: a frontier MoE on 2026 rack silicon is tens-to-hundreds of
+        # tok/s per user. Outside 10-600 means the projection has broken.
+        if not (10.0 <= rack["tps_per_user"] <= 600.0):
+            raise Fail(f"{m}: rack projection {rack['tps_per_user']:.1f} tok/s/user "
+                       f"is outside the plausible 10-600 band")
+        # The GB10 must never be offered as a fitting platform for these.
+        if small["system"] == "Dell Pro Max GB10":
+            raise Fail(f"{m} reported as fitting a GB10")
+        rows.append(f"{m.split()[0]} {rack['tps_per_user']:.0f}")
+    report("21 realistic-platform", True,
+           "NVL72 tok/s/user: " + ", ".join(rows))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--generate", action="store_true", help="(re)write golden baseline")
@@ -655,7 +759,9 @@ def main():
                a12_kv_matches_box_measurements, a13_frontier_kv_geometry,
                a14_frontier_cannot_fit_gb10, a15_inkling_pair_differs_only_by_format,
                a16_predictor_backtest, a17_predicted_tier_is_distinct,
-               a18_sparsity_beats_size):
+               a18_sparsity_beats_size, a19_projection_matches_published,
+               a20_gb10_basis_is_pass_through,
+               a21_frontier_has_realistic_platform):
         try:
             fn(report)
         except Fail as e:

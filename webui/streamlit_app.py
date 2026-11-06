@@ -2417,9 +2417,52 @@ with tab_tco:
             elif _anchor and _anchor_kind == "predicted":
                 _bandtxt = (f" Range **{_anchor_band[0]:.1f}–{_anchor_band[1]:.1f} tok/s**."
                             if _anchor_band else "")
-                st.info(
-                    f"**{_anchor:.1f} tok/s** for **{tco_model}** — {_anchor_why}{_bandtxt}"
+                # A GB10 figure for a model that cannot fit a GB10 is a
+                # COUNTERFACTUAL, and printing it bare is the most misleading
+                # thing this panel can do: 2.7 tok/s reads as a fact about
+                # Kimi-K3 when it is "what one GB10 would do if it could hold
+                # 1,560.9 GB", which it cannot. So when the model needs real
+                # hardware, lead with the figure ON that hardware and demote the
+                # GB10 number to the scaling basis it actually is. The basis is a
+                # pure pass-through (GB10_BW_GBS cancels out of the projection --
+                # smoke assertion a20), so nothing downstream changes.
+                from helpers.vllm_reference import (
+                    smallest_fitting_platform as _smallest_plat,
+                    predicted_on_platform as _plat_tps,
+                    NVL72_REFERENCE as _NVL72,
                 )
+                _small = _smallest_plat(tco_model)
+                _rack  = _plat_tps(tco_model, _NVL72)
+                _real  = []
+                if _small:
+                    _real.append(
+                        f"**{_small['tps_per_user']:,.0f} tok/s/user** on the smallest "
+                        f"platform that can hold it — {_small['system']}, "
+                        f"{_small['gpus_per_copy']}-way tensor-parallel"
+                    )
+                if _rack and (not _small or _rack["system"] != _small["system"]):
+                    _real.append(
+                        f"**{_rack['tps_per_user']:,.0f} tok/s/user** on "
+                        f"{_rack['system']} (TP{_rack['gpus_per_copy']})"
+                    )
+                if _real:
+                    st.info(
+                        f"**PREDICTED throughput for {tco_model}** — "
+                        + " · ".join(_real)
+                        + f".\n\nThis model **cannot run on a Dell Pro Max GB10** at "
+                          f"all, so its GB10 figure of **{_anchor:.1f} tok/s** is a "
+                          f"*scaling basis, not an achievable rate* — it is what one "
+                          f"GB10 would decode if it could hold the weights. The basis "
+                          f"cancels out of every cross-hardware projection "
+                          f"(273 GB/s appears in the numerator of the anchor and the "
+                          f"denominator of the scale factor), so the platform figures "
+                          f"above are what the $/MTok below is actually built on."
+                          f"\n\n{_anchor_why}{_bandtxt}"
+                    )
+                else:
+                    st.info(
+                        f"**{_anchor:.1f} tok/s** for **{tco_model}** — {_anchor_why}{_bandtxt}"
+                    )
                 default_tps = _anchor
             elif _gb10_tps_measured:
                 _src = f" ({_gb10_tps_model.split('/')[-1]})" if _gb10_tps_model else ""

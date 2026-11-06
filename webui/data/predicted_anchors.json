@@ -10,7 +10,8 @@
     "this GB10. Do not add a row that was not measured here.",
     "bytes_per_param is the EFFECTIVE figure (checkpoint bytes / total params),",
     "not a nominal 0.5/1.0/2.0 -- every 2026 4-bit release is mixed-precision and",
-    "none of them is actually 0.5 B/param."
+    "none of them is actually 0.5 B/param.",
+    "cross_hardware_validation below is THIRD-PARTY data and is deliberately NOT used to calibrate anything. It exists to BACK-TEST the cross-hardware projection (scale_throughput) against a published measurement of a model of the same class on the same rack, which is the one thing this box can never measure for itself. See scripts/smoke_tco_capacity.py::a19."
   ],
   "bandwidth_gbs": 273,
   "calibration": [
@@ -42,5 +43,56 @@
       "measured_tps": 18.0,
       "source": "gb10-laguna probe.sh; 99.8 GB checkpoint / 118B = 0.846 B/param"
     }
-  ]
+  ],
+  "cross_hardware_validation": {
+    "_note": [
+      "DeepSeek-R1 671B-A37B is the closest published analogue to the 2026 frontier",
+      "entries: same sparse-MoE shape, same MLA attention, 37B active. These are",
+      "tok/s PER USER (interactivity) against tok/s per chip, i.e. points on a",
+      "throughput/latency Pareto curve, not a single number. A projection is",
+      "validated if it lands INSIDE the published envelope -- toward the",
+      "high-throughput end, because that is the operating point a $/MTok planner",
+      "cares about.",
+      "Source states the values are interpolated from real benchmark runs, so the",
+      "envelope is the claim, not any single point."
+    ],
+    "source": "SemiAnalysis InferenceX, DeepSeek R1 8k/1k FP4, GB200 NVL72 vs GB300 NVL72",
+    "url": "https://inferencex.semianalysis.com/compare/deepseek-r1-gb200-vs-gb300",
+    "retrieved": "2026-11-06",
+    "used_for_calibration": false,
+    "model_catalog_key": "DeepSeek-R1 (671B)",
+    "precision": "FP4",
+    "points": [
+      {
+        "system": "Dell PowerEdge XE9712 (GB300 NVL72)",
+        "tps_per_user": 93,
+        "tps_per_chip": 12534.4
+      },
+      {
+        "system": "Dell PowerEdge XE9712 (GB300 NVL72)",
+        "tps_per_user": 162,
+        "tps_per_chip": 5393.8
+      },
+      {
+        "system": "Dell PowerEdge XE9712 (GB300 NVL72)",
+        "tps_per_user": 231,
+        "tps_per_chip": 1065.2
+      },
+      {
+        "system": "GB200 NVL72 (no Dell SKU in catalog)",
+        "tps_per_user": 93,
+        "tps_per_chip": 11531.8
+      },
+      {
+        "system": "GB200 NVL72 (no Dell SKU in catalog)",
+        "tps_per_user": 162,
+        "tps_per_chip": 4192.5
+      },
+      {
+        "system": "GB200 NVL72 (no Dell SKU in catalog)",
+        "tps_per_user": 231,
+        "tps_per_chip": 1012.2
+      }
+    ]
+  }
 }
