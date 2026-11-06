@@ -1018,3 +1018,67 @@ $/MTok now spans **22x** across the catalog, driven by per-model measurements
 rather than one shared number. Change the user count and nodes, CapEx, aggregate
 throughput and $/MTok all move off these anchors. A 35B MoE needing **one** node
 while a 14B dense needs **two** is the sparse-model argument in a single row.
+
+---
+
+# Only ONE quantization sub-format works on this stack — 2026-11-05
+
+Earlier I concluded "compressed-tensors works". That was too broad. Loading AND
+generating from each sub-format, every time with a real generation rather than a
+successful load:
+
+| `format` | quant_method | example | resident | output |
+|---|---|---|---|---|
+| **`nvfp4-pack-quantized`** | compressed-tensors | nvidia/Qwen3-8B-NVFP4 | **5.96 GiB** (packed) | **coherent** |
+| `pack-quantized` (int4/w4a16) | compressed-tensors | RedHatAI/Qwen3-30B-A3B-…w4a16 | 55.6 GiB | `\\",\\\\",\\\\"…` garbage |
+| `pack-quantized` (int4/w4a16) | compressed-tensors | amd/Qwen3.6-35B-A3B-w4a16 | 64.6 GiB | `archyCalAMILrousciu…` garbage |
+| `float-quantized` / block fp8 | fp8 | Qwen3.6-35B, Qwen3.8-27B | ~BF16 size | garbage |
+| `modelopt` / `modelopt_mixed` | modelopt | Nemotrons, Gemma-4, Laguna | — | raises or garbage |
+| (none) | plain BF16 | Qwen3-8B, Phi-4, … | 2 B/param | **coherent** |
+
+So the working set is **plain BF16** and **`nvfp4-pack-quantized`** — nothing
+else. Note the int4 w4a16 checkpoints also balloon to BF16 size on load (55-65
+GiB from a 17-20 GB file), so they lose the "small loading weights" benefit as
+well as being wrong.
+
+## A real bug this exposed
+
+`_is_prequantized_nvfp4()` chose the load path by matching the string **"NVFP4"
+in the model name**. A compressed-tensors checkpoint named `*-w4a16` therefore
+fell through to the bitsandbytes branch:
+
+    The model is quantized with CompressedTensorsConfig but you are passing a
+    BitsAndBytesConfig config.
+
+Routing by filename was always going to break on the first vendor that named a
+format differently, and it did. It now reads the declared `quant_method`, and
+`checkpoint_quant_method()` accepts a direct path as well as an HF id.
+
+Fixing the routing did NOT make those models work — it moved them from "wrong
+error" to "correct path, still garbage" — which is the useful outcome: it
+isolates the failure to the stack's int4 kernels rather than to our plumbing.
+
+## Why Nemotron and Laguna work in their own projects
+
+Different inference engine, not a broken model:
+
+| project | engine | model |
+|---|---|---|
+| gb10-nemotron | `vllm/vllm-openai:v0.27.1` | Nemotron-3.5-Lightning-NVFP4 |
+| gb10-laguna | `vllm/vllm-openai:v0.27.1` | Laguna-S-2.1-NVFP4 |
+| gb10-markets | `vllm/vllm-openai:v0.27.1` | Qwen3.6-35B-A3B-FP8 |
+| **gb10-demo Benchmark** | **HF transformers in-process** | its own catalog |
+
+vLLM implements ModelOpt NVFP4 and block-FP8 kernels for sm_121; transformers
+5.5.4 registers no ModelOpt quantizer at all and its fp8/int4 paths produce
+garbage here. This is by design on the demo side — `vllm_reference.py:4` records
+that the demo never runs vLLM in-process, so it cannot collide with the serving
+projects.
+
+Laguna has a second, independent blocker: 92.9 GiB needing
+`--gpu-memory-utilization 0.92`, against the demo's 100 GB usable window. It
+currently fails to start in its own project too.
+
+The measurement that makes this a feature rather than an excuse:
+**Qwen3-8B-NVFP4 is 6.0 tok/s under HF and 38.8 under vLLM — 6.5x on identical
+weights and hardware.**
