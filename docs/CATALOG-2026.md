@@ -1082,3 +1082,52 @@ currently fails to start in its own project too.
 The measurement that makes this a feature rather than an excuse:
 **Qwen3-8B-NVFP4 is 6.0 tok/s under HF and 38.8 under vLLM — 6.5x on identical
 weights and hardware.**
+
+## 2026-11-06 — ModelOpt→compressed-tensors conversion does NOT generalize to Gemma-4
+
+`scripts/convert_nvfp4_to_ct.py` is the reason `nvidia/Qwen3-8B-NVFP4` works: it
+rewrote that ModelOpt checkpoint into `nvfp4-pack-quantized`, and
+`nvidia--Qwen3-8B-NVFP4.modelopt-orig` is the pre-conversion backup. The script
+was generalized today (`--src`/`--dst`, an abort when a checkpoint mixes FP8 into
+NVFP4, and the processor/chat-template files a VLM needs) and tried on
+`nvidia/Gemma-4-26B-A4B-NVFP4` — a promising target because
+`Gemma4ForConditionalGeneration` **is** in transformers 5.5.4 and the checkpoint
+carries a `vision_config`, so it would have been both an FP4 MoE anchor and the
+VLM headline in one model.
+
+**It failed, and the reason is not the quantization format.** The conversion runs
+(18 s, 11,520 U8-packed modules, all with a `weight_scale_2`) and produces a
+checkpoint whose fingerprint is `(compressed-tensors, nvfp4-pack-quantized)` — so
+the new format guard *allows* it. It then loads in 4.5 s and generates **empty
+output**. The load log lists hundreds of MISSING tensors, newly initialized:
+
+    model.language_model.layers.{0...29}.mlp.up_proj.weight_global_scale      MISSING
+    model.vision_tower.encoder.layers.{0...26}.self_attn.q_proj.linear.weight_packed  MISSING
+    model.embed_vision.embedding_projection.weight_packed                     MISSING
+
+The source and converted checkpoints have **identical** tensor names
+(`model.language_model.layers.0.self_attn.q_proj.weight`,
+`model.vision_tower.encoder.layers.0.self_attn.q_proj.linear.weight`), which is
+the clue: the converter only rewrites the quantization *suffixes*
+(`weight`→`weight_packed`, `weight_scale_2`→`weight_global_scale`). For
+`Qwen3ForCausalLM` that is sufficient. For this nested multimodal arch,
+transformers' compressed-tensors integration expects the packed names at module
+paths the ModelOpt export does not use — note the `.linear.` infix on every
+vision-tower projection. A suffix rename cannot produce those; the converter
+would need a per-architecture module-path remap.
+
+Conclusion: the ModelOpt blocker is **per-architecture**, not per-format, so
+"convert it" is not a general escape hatch. Also note the failed artifact was a
+live hazard and was deleted: a converted-but-broken directory passes the format
+guard, because the guard reads the declared format and the format was genuinely
+correct. The checkpoint was wrong, not its label — the same
+verified-metadata-is-not-verified-behaviour trap as every other finding here, now
+reachable *through* the guard rather than around it.
+
+Not retried: the two Nemotron VLMs. They are better prospects than they looked —
+they ship their own modeling code with `auto_map` naming
+`AutoModelForImageTextToText`, so they are not arch-blocked by stock transformers
+— but `NemotronH_Omni_Reasoning_V3` is a custom class whose packed-weight
+expectations are unknown, and the Super-VL is `modelopt_mixed` with almost no
+quantized tensors in its first shard. Attempt only with a load+generate check as
+the acceptance test, never a successful load.

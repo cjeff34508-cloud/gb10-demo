@@ -24,8 +24,28 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-SRC = Path("models/llm-models/nvidia--Qwen3-8B-NVFP4")
-DST = Path("models/llm-models/nvidia--Qwen3-8B-NVFP4-ct")
+import argparse
+
+_ROOT = Path.home() / "gb10-demo"
+_ap = argparse.ArgumentParser(description=__doc__)
+_ap.add_argument("--src", required=True,
+                 help="ModelOpt checkpoint dir (absolute, or relative to ~/gb10-demo)")
+_ap.add_argument("--dst", required=True, help="output dir for the converted checkpoint")
+_a = _ap.parse_args()
+
+
+def _resolve(x: str) -> Path:
+    q = Path(x)
+    return q if q.is_absolute() else _ROOT / q
+
+
+SRC = _resolve(_a.src)
+DST = _resolve(_a.dst)
+if not (SRC / "config.json").exists():
+    raise SystemExit(f"no config.json in {SRC}")
+if DST.exists() and any(DST.glob("*.safetensors")):
+    raise SystemExit(f"{DST} already holds shards — refusing to overwrite")
+print(f"src: {SRC}\ndst: {DST}")
 
 RENAME = {
     "weight_scale_2": "weight_global_scale",
@@ -43,7 +63,35 @@ for shard in shards:
         for k in h.keys():
             if k.endswith(".weight") and h.get_slice(k).get_dtype() == "U8":
                 quant_bases.add(k[: -len(".weight")])
-print(f"quantized linear modules: {len(quant_bases)}")
+print(f"quantized linear modules (U8-packed .weight): {len(quant_bases)}")
+
+# A base with weight_scale but NO weight_scale_2 is FP8-quantized, not NVFP4.
+# This converter only handles the NVFP4 packing, so flag them loudly rather than
+# emitting a checkpoint that is half-translated and claims to be whole.
+_have_s2: set[str] = set()
+for _sh in shards:
+    with safe_open(_sh, "pt") as _h:
+        for _k in _h.keys():
+            if _k.endswith(".weight_scale_2"):
+                _have_s2.add(_k[: -len(".weight_scale_2")])
+_missing = quant_bases - _have_s2
+if _missing:
+    print(f"!! {len(_missing)} U8 modules have no weight_scale_2 (FP8, not NVFP4) — "
+          f"e.g. {sorted(_missing)[:3]}")
+    print("!! this converter handles NVFP4 only; the result would be mixed. Aborting.")
+    raise SystemExit(2)
+
+# Extra ModelOpt-specific tensors stock compressed-tensors has no schema for.
+_extra: set[str] = set()
+for _sh in shards:
+    with safe_open(_sh, "pt") as _h:
+        for _k in _h.keys():
+            _sx = _k.split(".")[-1]
+            if _sx in ("layer_scalar", "per_expert_scale", "scale"):
+                _extra.add(_sx)
+if _extra:
+    print(f"note: passing through non-standard ModelOpt tensors: {sorted(_extra)} "
+          f"— if the load fails, these are the first suspects")
 
 # Second pass: rewrite each shard, building the new weight_map.
 weight_map: dict[str, str] = {}
@@ -102,7 +150,11 @@ cfg["quantization_config"] = {
 
 # Copy tokenizer / generation config verbatim
 for name in ("generation_config.json", "tokenizer_config.json", "tokenizer.json",
-             "vocab.json", "added_tokens.json", "special_tokens_map.json"):
+             "vocab.json", "added_tokens.json", "special_tokens_map.json",
+             "merges.txt", "chat_template.jinja", "chat_template.json",
+             # a VLM is unusable without its image processor
+             "preprocessor_config.json", "processor_config.json",
+             "video_preprocessor_config.json"):
     src = SRC / name
     if src.exists():
         (DST / name).write_bytes(src.read_bytes())
