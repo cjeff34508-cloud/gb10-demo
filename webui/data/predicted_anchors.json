@@ -1,0 +1,46 @@
+{
+  "_README": [
+    "Calibration set for tco_engine/vllm_reference PREDICTED throughput anchors.",
+    "Model: tok/s = GB10_BW_GBS / (active_b * bytes_per_param) * efficiency.",
+    "Decode on this box is memory-bandwidth-bound, so the bytes a model reads per",
+    "token (ACTIVE parameters x bytes/param) sets the ceiling, and `efficiency` is",
+    "the measured fraction of that ceiling actually achieved.",
+    "The efficiency is DERIVED FROM THE MEASUREMENTS BELOW at import time, never",
+    "hardcoded. Every row here is a single-stream (n_users=1) figure measured on",
+    "this GB10. Do not add a row that was not measured here.",
+    "bytes_per_param is the EFFECTIVE figure (checkpoint bytes / total params),",
+    "not a nominal 0.5/1.0/2.0 -- every 2026 4-bit release is mixed-precision and",
+    "none of them is actually 0.5 B/param."
+  ],
+  "bandwidth_gbs": 273,
+  "calibration": [
+    {
+      "label": "Qwen2.5-7B BF16 (vLLM)",
+      "active_b": 7.0,
+      "bytes_per_param": 2.0,
+      "measured_tps": 13.1,
+      "source": "vllm_reference.json captures.qwen2.5-7b per_n[n_users=1]"
+    },
+    {
+      "label": "Qwen3-8B-NVFP4 (vLLM)",
+      "active_b": 8.0,
+      "bytes_per_param": 0.5,
+      "measured_tps": 38.8,
+      "source": "vllm_reference.json captures.qwen3-8b-nvfp4"
+    },
+    {
+      "label": "Qwen3.6-35B-A3B FP8 (vLLM)",
+      "active_b": 3.0,
+      "bytes_per_param": 1.0,
+      "measured_tps": 50.8,
+      "source": "gb10-markets bench_decode.py, no-MTP arm"
+    },
+    {
+      "label": "Laguna-S-2.1 118B-A8B mixed NVFP4 (vLLM)",
+      "active_b": 8.0,
+      "bytes_per_param": 0.846,
+      "measured_tps": 18.0,
+      "source": "gb10-laguna probe.sh; 99.8 GB checkpoint / 118B = 0.846 B/param"
+    }
+  ]
+}

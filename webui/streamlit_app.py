@@ -2402,11 +2402,24 @@ with tab_tco:
             # Before this, (2) or a hardcoded 1200 tok/s was applied to EVERY
             # model, which is why $/MTok read the same for models differing 40x
             # in active parameters.
-            from helpers.vllm_reference import best_anchor as _vllm_tps
-            _anchor, _anchor_why = _vllm_tps(tco_model)
+            #   4. a PREDICTED anchor from the bandwidth-bound decode model,
+            #      shown in blue and labelled PREDICTED with its band. This tier
+            #      exists because the 2026 frontier entries can never be measured
+            #      here (4-32 GB10s just to hold their weights), and without it
+            #      every one of them inherited Qwen2.5-7B's 13.1 tok/s — pricing
+            #      a 2.8T model exactly like a 7B.
+            from helpers.vllm_reference import anchor_with_prediction as _anchor_tier
+            _anchor, _anchor_why, _anchor_kind, _anchor_band = _anchor_tier(tco_model)
             default_tps = None
-            if _anchor:
+            if _anchor and _anchor_kind in ("vllm", "hf"):
                 st.success(f"**{_anchor:.1f} tok/s** for **{tco_model}** — {_anchor_why}")
+                default_tps = _anchor
+            elif _anchor and _anchor_kind == "predicted":
+                _bandtxt = (f" Range **{_anchor_band[0]:.1f}–{_anchor_band[1]:.1f} tok/s**."
+                            if _anchor_band else "")
+                st.info(
+                    f"**{_anchor:.1f} tok/s** for **{tco_model}** — {_anchor_why}{_bandtxt}"
+                )
                 default_tps = _anchor
             elif _gb10_tps_measured:
                 _src = f" ({_gb10_tps_model.split('/')[-1]})" if _gb10_tps_model else ""
@@ -2424,7 +2437,8 @@ with tab_tco:
                     f"geometry and measured checkpoint size. The tok/s-derived "
                     f"figures ($/MTok, aggregate throughput) are only as good as the "
                     f"number you enter next. Capture one with "
-                    f"`scripts/recapture_reference.sh`."
+                    f"`scripts/recapture_reference.sh`.\n\n"
+                    f"No prediction either: {_anchor_why}"
                 )
 
             # Measured TPS can legitimately be <10 tok/s for very large models, so

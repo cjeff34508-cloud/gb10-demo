@@ -1058,6 +1058,49 @@ MODEL_CATALOG: dict[str, dict] = {
     "Mixtral-8x22B":            {"params_b":  141.0, "category": "LLM",  "type": "moe", "active_b": 39.0},
     "Qwen3-235B-A22B":          {"params_b":  235.0, "category": "LLM",  "type": "moe", "active_b": 22.0},
     # Hyperscale (multi-node only)
+    # --- 2026 frontier MoE (G2b, verified 2026-11-06). NONE of these fits a GB10:
+    # every one is PROJECTION-ONLY and carries a PREDICTED anchor, never a
+    # measurement. Sizes are the safetensors byte total from each repo's own Hub
+    # manifest (decimal GB); arch fields are read from each repo's own
+    # config.json. Provenance for every figure is in docs/CATALOG-2026.md.
+    "Nemotron-3-Ultra-550B-A55B": {"params_b": 550.0, "category": "LLM", "type": "moe",
+                                 "active_b": 55.0, "precisions": ["FP4"], "native": "FP4",
+                                 "disk_gb": {"FP4": 352.3}},   # nvidia/...-550B-A55B-NVFP4
+    "GLM-5.2-753B-A40B":        {"params_b":  753.0, "category": "LLM",  "type": "moe",
+                                 "active_b": 40.0, "precisions": ["FP4"], "native": "FP4",
+                                 "disk_gb": {"FP4": 464.8}},   # nvidia/GLM-5.2-NVFP4
+    # Inkling ships BOTH builds of the SAME 975B model, so the pair is the
+    # quantization argument at the top of the range: 592.0 GB vs 1904.8 GB =
+    # 3.2x, i.e. 7 GB10s vs 21, decided purely by which file you download.
+    # Follows the existing Llama-3.1-405B / (FP8) two-entry precedent.
+    # NOTE: the card says 975B total; the BF16 manifest is 1904.8 GB, which is
+    # 952.4B at 2 B/param. We keep the card's 975B and size from disk_gb, so the
+    # discrepancy never reaches a number the UI shows.
+    "Inkling-975B-A41B":        {"params_b":  975.0, "category": "LLM",  "type": "moe",
+                                 "active_b": 41.0, "precisions": ["FP4"], "native": "FP4",
+                                 "disk_gb": {"FP4": 592.0}},   # thinkingmachines/Inkling-NVFP4
+    "Inkling-975B-A41B (BF16)": {"params_b":  975.0, "category": "LLM",  "type": "moe",
+                                 "active_b": 41.0, "precisions": ["BF16"], "native": "BF16",
+                                 "disk_gb": {"BF16": 1904.8}}, # thinkingmachines/Inkling
+    # DeepSeek-V4-Pro: sized from the FIRST-PARTY FP8 repo (864.7 GB), which the
+    # model card itself describes as "FP4 + FP8 Mixed: MoE expert parameters use
+    # FP4 precision; most other parameters use FP8".
+    # DELIBERATELY NOT nvidia/DeepSeek-V4-Pro-NVFP4, which is 913.1 GB -- 48.4 GB
+    # LARGER than the FP8 original it quantizes, because its config is
+    # quant_algo MIXED_PRECISION with NVFP4 on layers.*.ffn.experts only and an
+    # `ignore` list (*.attn.*, *.ffn.shared_experts.*, head, mtp.*) that returns
+    # those tensors at bfloat16. A checkpoint labelled NVFP4 came out bigger than
+    # the one it shrank: the Laguna mixed-precision trap in its strongest form.
+    "DeepSeek-V4-Pro (1.6T)":   {"params_b": 1600.0, "category": "LLM",  "type": "moe",
+                                 "active_b": 49.0, "precisions": ["FP8"], "native": "FP8",
+                                 "disk_gb": {"FP8": 864.7}},   # deepseek-ai/DeepSeek-V4-Pro
+    # Largest open-weight model in the catalog. Ships MXFP4 (OCP microscaling),
+    # NOT NVFP4 -- which is the format the AMD MI350P accelerates natively and
+    # NVIDIA 4-bit silicon does not. Modelled in the engine's FP4 slot because
+    # weights come from the measured disk_gb, so bytes/param is never guessed.
+    "Kimi-K3 (2.8T)":           {"params_b": 2800.0, "category": "LLM",  "type": "moe",
+                                 "active_b": 104.0, "precisions": ["FP4"], "native": "FP4",
+                                 "disk_gb": {"FP4": 1560.9}},  # moonshotai/Kimi-K3, mxfp4-pack-quantized
     "Nemotron-4-340B":          {"params_b":  340.0, "category": "LLM",  "type": "decoder"},
     "Llama-3.1-405B":           {"params_b":  405.0, "category": "LLM",  "type": "decoder"},
     "Llama-3.1-405B (FP8)":     {"params_b":  405.0, "category": "LLM",  "type": "decoder"},
@@ -1156,6 +1199,38 @@ MODEL_ARCH: dict[str, dict] = {
     "Mistral-Large-123B":    {"layers": 88,  "q_heads": 96,  "kv_heads": 8,  "hidden": 12288, "ctx": 131072, "attn": "GQA"},
     "Mixtral-8x22B":         {"layers": 56,  "q_heads": 48,  "kv_heads": 8,  "hidden": 6144,  "ctx": 65536,  "attn": "GQA", "experts": 8, "topk": 2},
     "Qwen3-235B-A22B":       {"layers": 94,  "q_heads": 64,  "kv_heads": 4,  "hidden": 4096,  "ctx": 131072, "attn": "GQA", "experts": 128, "topk": 8},
+    # --- 2026 frontier MoE (G2b). Every field below is from the repo's own
+    # config.json, except Nemotron-3-Ultra's layer census, which is derived from
+    # its model.safetensors.index.json because the config omits
+    # num_hidden_layers entirely: 108 layers = 13 attention + 47 Mamba-2 + 48
+    # MoE. Only those 13 carry a context-growing KV cache, so a 550B model costs
+    # 6.5 KiB/tok at FP8 -- LESS KV than Qwen3-0.6B's 112 KiB/tok. Billing all
+    # 108 would over-state it by 8.3x.
+    # ctx CONFLICT: the model card claims "up to 1M tokens", config.json says
+    # 262144. Config wins (ctx is display-only); the card's claim is noted here
+    # rather than silently preferred.
+    "Nemotron-3-Ultra-550B-A55B": {"layers": 108, "attn_layers": 13, "q_heads": 64, "kv_heads": 2, "hidden": 8192, "head_dim": 128, "ctx": 262144,  "attn": "GQA (hybrid Mamba-2)", "experts": 512, "topk": 22, "shared_experts": 1},
+    # MLA kv_latent = kv_lora_rank 512 + qk_rope_head_dim 64 = 576, the absorbed
+    # per-layer cache width. DSA attends to index_topk 2048 selected tokens, but
+    # the full cache must still be STORED, and storage is what capacity needs.
+    "GLM-5.2-753B-A40B":     {"layers": 78,  "q_heads": 64,  "hidden": 6144,  "ctx": 1048576, "attn": "MLA (DeepSeek sparse)", "kv_latent": 576, "experts": 256, "topk": 8, "shared_experts": 1},
+    # Inkling's local/global attention SPLIT IS UNPUBLISHED: the card says only
+    # "a hybrid of local and global layers", there is no layer_types, and the
+    # config carries a second, unassigned SWA head group (swa_num_key_value_heads
+    # 16, sliding_window_size 512). So all 66 layers are billed on the global
+    # path: 132 KiB/tok at FP8 is an UPPER BOUND, not a measurement. Understating
+    # KV is the dangerous direction on a capacity planner, so we overstate.
+    "Inkling-975B-A41B":     {"layers": 66,  "q_heads": 64,  "kv_heads": 8,  "hidden": 6144,  "head_dim": 128, "ctx": 1048576, "attn": "GQA (hybrid local/global)", "swa": True, "experts": 256, "topk": 6, "shared_experts": 2},
+    "Inkling-975B-A41B (BF16)": {"layers": 66, "q_heads": 64, "kv_heads": 8, "hidden": 6144,  "head_dim": 128, "ctx": 1048576, "attn": "GQA (hybrid local/global)", "swa": True, "experts": 256, "topk": 6, "shared_experts": 2},
+    # head_dim 512 + qk_rope_head_dim 64 = 576 absorbed MLA cache. The config has
+    # no kv_lora_rank key (DeepseekV4 drops it), so the latent width is taken
+    # from head_dim, which is the absorbed cache width. CSA + HCA compress this
+    # further at 1M; 576 is the conservative upper bound.
+    "DeepSeek-V4-Pro (1.6T)": {"layers": 61, "q_heads": 128, "hidden": 7168,  "ctx": 1048576, "attn": "MLA (CSA + HCA hybrid)", "kv_latent": 576, "experts": 384, "topk": 6, "shared_experts": 1},
+    # 24 of 93 layers are full MLA attention (linear_attn_config.full_attn_layers);
+    # the other 69 are KDA linear attention and carry no growing KV cache.
+    # 16 of 896 routed experts + 2 shared per token = 3.7% activation.
+    "Kimi-K3 (2.8T)":        {"layers": 93,  "attn_layers": 24, "q_heads": 96, "hidden": 7168, "ctx": 1048576, "attn": "MLA (hybrid KDA linear)", "kv_latent": 576, "experts": 896, "topk": 16, "shared_experts": 2},
     "Nemotron-4-340B":       {"layers": 96,  "q_heads": 96,  "kv_heads": 8,  "hidden": 18432, "ctx": 4096,   "attn": "GQA"},
     "Llama-3.1-405B":        {"layers": 126, "q_heads": 128, "kv_heads": 8,  "hidden": 16384, "ctx": 131072, "attn": "GQA"},
     "Llama-3.1-405B (FP8)":  {"layers": 126, "q_heads": 128, "kv_heads": 8,  "hidden": 16384, "ctx": 131072, "attn": "GQA"},
@@ -1165,7 +1240,9 @@ MODEL_ARCH: dict[str, dict] = {
 
 
 def _fmt_ctx(n: int) -> str:
-    """131072 → '128K', 4096 → '4K', 2048 → '2K'."""
+    """1048576 → '1M', 131072 → '128K', 4096 → '4K', 2048 → '2K'."""
+    if n and n >= 1024 * 1024:
+        return f"{n / (1024 * 1024):g}M"
     if n and n >= 1024:
         return f"{n / 1024:g}K"
     return str(n)
@@ -1175,9 +1252,9 @@ def _efficiency_tags(info: dict, arch: dict) -> list[str]:
     """Human-readable efficiency modifiers (attention scheme, SWA, MoE routing)."""
     tags: list[str] = []
     attn = arch.get("attn")
-    if attn == "MLA":
+    if str(attn or "").startswith("MLA"):
         tags.append("MLA (multi-head latent attention)")
-    elif attn == "GQA":
+    elif str(attn or "").startswith("GQA"):
         tags.append("GQA (grouped-query attention)")
     elif attn == "MQA":
         tags.append("MQA (multi-query attention)")
@@ -1213,9 +1290,14 @@ def model_detail_lines(model_name: str) -> list[str]:
         lines.append(f"**Parameters:** {p:g}B")
 
     if arch.get("layers"):
-        lines.append(f"**Layers:** {arch['layers']}")
+        _al = arch.get("attn_layers")
+        if _al and _al != arch["layers"]:
+            lines.append(f"**Layers:** {arch['layers']} · only **{_al} carry a KV cache** "
+                         f"({arch['layers'] - _al} are linear/Mamba/MoE and cost no KV per token)")
+        else:
+            lines.append(f"**Layers:** {arch['layers']}")
 
-    if arch.get("attn") == "MLA":
+    if str(arch.get("attn") or "").startswith("MLA"):
         lines.append(f"**KV heads:** MLA — compressed {arch.get('kv_latent', '?')}-dim "
                      "latent KV (no per-head KV cache)")
     elif arch.get("kv_heads"):
@@ -1525,7 +1607,7 @@ def kv_bytes_per_token(model_name: str, kv_dtype: str = "FP16") -> float | None:
     if not layers:
         return None
     # MLA: a single compressed latent per layer, not per-head K and V.
-    if arch.get("attn") == "MLA" and arch.get("kv_latent"):
+    if str(arch.get("attn") or "").startswith("MLA") and arch.get("kv_latent"):
         return float(layers * arch["kv_latent"] * nbytes)
     kv_heads = arch.get("kv_heads") or arch.get("q_heads")
     if not kv_heads:

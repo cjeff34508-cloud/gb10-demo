@@ -1203,3 +1203,145 @@ vision entries are encoders. `benchmark_vlm()` stays implemented and unreachable
 The honest options are vLLM (which serves these models correctly) or
 gb10-markets' Qwen3.6-35B, which is natively a VLM with its tower disabled by one
 flag — not the HF benchmark path.
+
+---
+
+## 2026-11-06 — G2b/G3: six frontier MoE entries + the PREDICTED anchor tier
+
+Asked for 4–8 catalog models that do **not** fit a GB10, weighted toward the largest, toward MoE
+releases that load only a small part, and toward large context. Verified eight candidates against
+their own metadata; **five were chosen** (Nemotron Ultra, Kimi K3, DeepSeek V4 Pro, Inkling,
+GLM-5.2), and Inkling went in twice — NVFP4 and BF16 — following the existing
+`Llama-3.1-405B` / `(FP8)` two-entry precedent. Six rows in all.
+
+**Method.** Every architecture field was read from the named repo's own `config.json`; every size is
+the safetensors byte total from that repo's Hub manifest (decimal GB). Nothing came from a blog, a
+spec sheet or a model card where the config disagreed. Nothing was downloaded — 0 GB on disk.
+
+| key | total / active | native | size | layers (KV-bearing) | KV KiB/tok @FP8 | ctx (config) |
+|---|---|---|---|---|---|---|
+| `Kimi-K3 (2.8T)` | 2,800B / 104B | MXFP4 `mxfp4-pack-quantized` | 1,560.9 GB | 93 (**24** full MLA + 69 KDA linear) | 13.5 | 1M |
+| `DeepSeek-V4-Pro (1.6T)` | 1,600B / 49B | FP4+FP8 mixed | 864.7 GB | 61 (CSA + HCA) | 34.3 | 1M |
+| `Inkling-975B-A41B` | 975B / 41B | NVFP4 | 592.0 GB | 66 (hybrid local/global) | ≤132 | 1M |
+| `Inkling-975B-A41B (BF16)` | 975B / 41B | BF16 | 1,904.8 GB | as above | ≤132 | 1M |
+| `GLM-5.2-753B-A40B` | 753B / 40B | NVFP4 `modelopt` | 464.8 GB | 78 (DeepSeek-sparse) | 43.9 | 1M |
+| `Nemotron-3-Ultra-550B-A55B` | 550B / 55B | NVFP4 `modelopt` | 352.3 GB | **108 (13 attn + 47 Mamba-2 + 48 MoE)** | **6.5** | 256K |
+
+### Finding 1 — a checkpoint labelled NVFP4 came out BIGGER than the one it shrank
+
+`nvidia/DeepSeek-V4-Pro-NVFP4` is **913.1 GB**, which is **48.4 GB larger** than the first-party FP8
+repo (864.7 GB) it quantizes. Its config explains it: `quant_algo: MIXED_PRECISION`,
+`quant_method: fp8`, NVFP4 applied only to `layers.*.ffn.experts`, and an `ignore` list covering
+`*.attn.*`, `*.ffn.shared_experts.*`, `head` and `mtp.*` — those tensors come back at the model's
+`bfloat16`. So the catalog sizes this model from the **first-party FP8 repo**, and 913.1 GB is
+recorded here as an anomaly rather than used.
+
+This is the Laguna mixed-precision trap in its strongest form to date. The standing rule holds and
+is now load-bearing twice over: **a format label is not a size, and it is not a behaviour.** Any
+future NVFP4 addition gets its size from a manifest, never from `params × 0.5`.
+
+### Finding 2 — Nemotron-3-Ultra's KV is the best number in the catalog
+
+Its `config.json` omits `num_hidden_layers` entirely, so the layer census came from
+`model.safetensors.index.json`: **108 layers = 13 attention + 47 Mamba-2 + 48 MoE**. Only the 13
+attention layers carry a context-growing KV cache, so a **550B model costs 6.5 KiB/token at FP8 —
+less KV than Qwen3-0.6B's 112 KiB/token.** Billing all 108 layers would overstate it by 8.3×.
+
+### Finding 3 — the largest model in the catalog ships MXFP4, not NVFP4
+
+`Kimi-K3` is `compressed-tensors` / `mxfp4-pack-quantized` — the OCP microscaling format, which is
+what the **AMD MI350P** (added to the TCO catalog the same day) accelerates natively and NVIDIA
+4-bit silicon does not. It is modelled in the engine's FP4 slot because weights come from the
+measured `disk_gb`, so bytes/param is never guessed from the precision label.
+
+### The PREDICTED anchor tier, and the back-test that nearly killed it
+
+Added bare, all six would have inherited the **13.1 tok/s** fallback — Qwen2.5-7B's July figure —
+so the TCO tab would have priced a 2.8T model exactly like a 7B. The fourth provenance tier
+(`webui/data/predicted_anchors.json` + `vllm_reference.predicted_anchor()`) closes that, shown in
+blue as **"PREDICTED — not measured"** with its band, distinct from measured-vLLM (green),
+borrowed-HF (amber) and nothing (red).
+
+`tok/s = 273 GB/s ÷ (active_b × bytes/param) × efficiency`, efficiency derived at call time from
+four on-box single-stream measurements (never hardcoded): **median 0.563**.
+
+**bytes/param is the EFFECTIVE figure** (`disk_gb ÷ params_b`), not a nominal 0.5 — because every
+2026 4-bit release is mixed-precision and none of them is actually 0.5 B/param. The six new entries
+run **0.54–1.95**.
+
+**The planned acceptance test failed, and the reason mattered.** The leave-one-out back-test was
+specified as "predict the held-out measurement, require it inside the band calibrated on the other
+three", with the band being the in-sample efficiency min–max. Two of four rows failed — and
+structurally had to: a min–max interval over n−1 points **cannot** cover a held-out endpoint, so
+holding out the best or worst measurement fails by construction and says nothing about accuracy.
+
+The fix was to band on the predictor's actual out-of-sample error instead:
+
+| held out | actual | predicted | error |
+|---|---|---|---|
+| Qwen2.5-7B BF16 | 13.1 | 10.9 | −16.9 % |
+| Qwen3-8B-NVFP4 | 38.8 | 38.1 | −1.8 % |
+| Qwen3.6-35B-A3B FP8 | 50.8 | 51.7 | +1.8 % |
+| Laguna-S-2.1 mixed NVFP4 | 18.0 | 22.9 | **+27.4 %** |
+
+So the published band is **±27 %**, which is the largest leave-one-out error, and the in-sample
+efficiency spread (±18 %) is explicitly *not* used because it understates real error. The gate is
+now the falsifiable part: `_PRED_MAX_LOO_ERR = 0.35`, asserted in `smoke_tco_capacity.py:a16`. Add a
+calibration row that makes the model worse and the suite goes red and the predictor refuses to
+publish. Predictions are also **refused outright for vision encoders** — CLIP/ViT/ResNet have no
+decode tok/s, and predicting one would be a category error dressed up as a figure.
+
+Predicted single-stream: GLM-5.2 **6.2** · Inkling **6.2** · DeepSeek-V4-Pro **5.8** ·
+Nemotron-Ultra **4.4** · Kimi-K3 **2.7** · Inkling BF16 **1.9** tok/s.
+
+**The ranking is the point.** `DeepSeek-V4-Pro` has **2.9× the parameters** of `Nemotron-3-Ultra`
+and is predicted **32 % faster per user**, because it reads 49B per token against 55B. `Kimi-K3`,
+the largest open model there is, is the slowest per user in the catalog. Parameter count ranks these
+models almost exactly backwards, and assertion 18 pins that ordering so a future edit cannot quietly
+restore "bigger = slower" as a coincidence.
+
+### Honesty caveats recorded with these entries
+
+- **All six are projection-only.** Three `modelopt`, one block-FP8 mixed, one `mxfp4-pack-quantized`,
+  one BF16 at 1.9 TB. The smallest needs **4 GB10s** just for weights. None is HF-benchmarkable here
+  and none ever gets a measured anchor from this box.
+- **`Inkling`'s local/global attention split is unpublished** — the card says only "a hybrid of local
+  and global layers", there is no `layer_types`, and the config carries an unassigned second SWA head
+  group (`swa_num_key_value_heads` 16, `sliding_window_size` 512). All 66 layers are billed on the
+  global path: **132 KiB/tok is an upper bound**, labelled as one. Understating KV is the dangerous
+  direction on a capacity planner.
+- **`Inkling`'s parameter count does not reconcile with its own manifest**: the card says 975B, the
+  BF16 repo is 1,904.8 GB = 952.4B at 2 B/param. We keep the card's 975B and size from `disk_gb`, so
+  the discrepancy never reaches a displayed number.
+- **`Nemotron-3-Ultra`'s context is contested**: card says "up to 1M", `config.json` says 262,144.
+  Config wins (`ctx` is display-only); the conflict is commented, not silently resolved.
+- **A model that spans nodes gets a CEILING, not an estimate.** `tco_engine.py:1889`'s multi-node
+  branch deliberately serves **one session per copy** and bills every node in it, so Kimi-K3 on an
+  XE9680 reads 196 nodes / $512 per MTok. The conclusion (buy NVL72, not 8-GPU boxes, for a 2.8T
+  model) is right; the magnitude is a conservative bound. These six entries are the first in the
+  catalog large enough to reach that branch at all.
+- **The GB10 still tests fit against 128 GB** (`tco_engine.py:338`) while `mem_guard` gates at 100 GB.
+  Unchanged by this work and it does not affect these six (they fail at either number), but it
+  remains open as plan item G0.
+
+### Checked and not chosen (verified to the same standard, available if widened)
+
+`Muse-Spark-Open-816B-A42B` (816B/42B, NVFP4 533.0 GB, 62 layers = 16 full + 46 SWA/2048, 1M ctx —
+**gated**, so its arch came from the `mlx-community` 4-bit mirror, not the sized repo) ·
+`DeepSeek-V4.1-Flash` (552B with **8B prefill / 16B decode** active, FP8 510.3 GB, 40 layers as 20
+causal-encoder + 20 decoder, 1M ctx — the most extreme sparsity found anywhere, but it does not fit
+the single-`active_b` schema) · `Beam-1.0-501B-A23B` (501.3B/23.4B, NVFP4 293.6 GB, Apache 2.0,
+52 layers = 9 full + 43 SWA/512, 1M ctx) · `MiniMax-M3` (428B/23B, NVFP4 250.1 GB, 60 layers,
+60 KiB/tok, 1M ctx) · `Qwen3-Coder-480B-A35B` (480B/35B at **BF16 960.3 GB**, 124 KiB/tok — fewer
+parameters than Muse-Spark, nearly 2× the disk).
+
+**Excluded:** `Qwen3.8-Max` (2.4T) and `Llama-4` — no first-party repo is readable with our token,
+only community derivatives, so nothing about them is verifiable here. Same test that excluded
+Llama-4 in the earlier pass.
+
+### Verification
+
+`scripts/smoke_tco_capacity.py` **18/18**, with six new assertions (13–18) and **no churn in the 90
+golden-baseline rows** — the baseline pins a fixed model/system list, so new catalog entries cannot
+move it. Assertion 13 pins all six KV figures to their config-derived values, because a wrong
+`attn_layers` is silent: the model still sizes, just wrongly.

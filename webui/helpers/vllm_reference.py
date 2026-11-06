@@ -204,3 +204,197 @@ def capture_for_model(model_ref: str) -> tuple[str | None, dict | None]:
     if model_ref in caps:
         return model_ref, caps[model_ref]
     return None, None
+
+
+# ---------------------------------------------------------------------------
+# PREDICTED anchors (webui/data/predicted_anchors.json) — the FOURTH tier
+# ---------------------------------------------------------------------------
+# The 2026 frontier models in MODEL_CATALOG cannot be measured here: every one
+# needs 4-32 GB10s just to hold its weights. Before this, each of them inherited
+# the 13.1 tok/s fallback — Qwen2.5-7B's July figure — so the TCO tab priced a
+# 2.8T model exactly like a 7B. Predicting openly is better than inheriting a
+# wrong number silently, PROVIDED the prediction is visually distinct from a
+# measurement and carries its band. That is the whole contract of this tier.
+#
+# Decode on this box is memory-bandwidth-bound, so:
+#     tok/s = bandwidth / (active_b * bytes_per_param) * efficiency
+# `efficiency` is DERIVED from the four on-box measurements at call time, never
+# hardcoded, and the leave-one-out back-test in scripts/smoke_tco_capacity.py
+# must retrodict all four before any of these numbers is allowed to publish.
+_PRED_PATH = _REF_PATH.parent / "predicted_anchors.json"
+
+
+# Largest leave-one-out relative error the predictor is allowed to have before
+# its numbers stop being publishable. Pinned by an assertion in
+# scripts/smoke_tco_capacity.py, which is what makes this a gate and not a knob:
+# add a calibration row that makes the model worse and the suite goes red.
+_PRED_MAX_LOO_ERR = 0.35
+
+
+def _median(xs: list[float]) -> float:
+    xs = sorted(xs)
+    n = len(xs)
+    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+
+
+def _calibration_rows() -> tuple[float, list[tuple[float, float]]] | None:
+    """``(bandwidth_gbs, [(gb_per_token, measured_tps), ...])``."""
+    try:
+        d = json.loads(_PRED_PATH.read_text())
+    except Exception:
+        return None
+    bw = float(d.get("bandwidth_gbs") or 0)
+    rows = []
+    for r in d.get("calibration") or []:
+        gb = float(r.get("active_b") or 0) * float(r.get("bytes_per_param") or 0)
+        tps = float(r.get("measured_tps") or 0)
+        if gb > 0 and tps > 0:
+            rows.append((gb, tps))
+    if bw <= 0 or len(rows) < 2:
+        return None
+    return bw, rows
+
+
+def loo_errors() -> list[float] | None:
+    """Signed leave-one-out relative errors of the predictor on its own data.
+
+    Calibrate on every row but one, predict the held-out row, and report
+    ``(pred - actual) / actual``. This is the predictor's only honest accuracy
+    statement, and the published band comes from it.
+    """
+    cal = _calibration_rows()
+    if not cal:
+        return None
+    bw, rows = cal
+    out = []
+    for i, (gb, tps) in enumerate(rows):
+        rest = [rows[j] for j in range(len(rows)) if j != i]
+        med = _median([t / (bw / g) for g, t in rest])
+        out.append(((bw / gb) * med - tps) / tps)
+    return out
+
+
+def _calibration() -> tuple[float, float, float, int] | None:
+    """``(bandwidth_gbs, eff_median, band_frac, n)`` from the calibration set.
+
+    ``band_frac`` is the largest ABSOLUTE leave-one-out error, so the band we
+    publish is the predictor's measured out-of-sample accuracy.
+
+    It is deliberately NOT the in-sample efficiency spread. That spread
+    (0.446-0.672 over four points) is narrower than the real error and, worse,
+    a min-max interval over n-1 points structurally cannot cover a held-out
+    endpoint — holding out the best or worst measurement fails by construction,
+    which says nothing about the model. The leave-one-out error does say
+    something: it is +/-27% here, against a +/-18% in-sample spread.
+    """
+    cal = _calibration_rows()
+    if not cal:
+        return None
+    bw, rows = cal
+    med = _median([tps / (bw / gb) for gb, tps in rows])
+    errs = loo_errors() or []
+    band = max((abs(e) for e in errs), default=0.0)
+    return bw, med, band, len(rows)
+
+
+def effective_bytes_per_param(catalog_name: str, precision: str | None = None) -> float | None:
+    """Bytes per parameter from the MEASURED checkpoint size, not a nominal constant.
+
+    Every 2026 4-bit release is mixed-precision — NVFP4 on the expert
+    projections, BF16 or FP8 everywhere else — so none of them is actually
+    0.5 B/param; the six frontier entries run 0.54-1.95. Where ``disk_gb``
+    carries a real checkpoint size we divide it by total params; otherwise we
+    fall back to the engine's nominal table and say so via the caller.
+    """
+    from . import tco_engine as _T
+    info = _T.MODEL_CATALOG.get(catalog_name) or {}
+    p_b = info.get("params_b")
+    if not p_b:
+        return None
+    prec = (precision or _T.native_precision(catalog_name) or "").upper()
+    disk = info.get("disk_gb")
+    if isinstance(disk, dict) and disk.get(prec):
+        return float(disk[prec]) / float(p_b)
+    return _T._BYTES_PER_PARAM.get(prec)
+
+
+def predicted_anchor(
+    catalog_name: str, precision: str | None = None
+) -> tuple[float | None, str, tuple[float, float] | None]:
+    """``(tps, provenance, (lo, hi))`` — a PREDICTION, never a measurement.
+
+    Returns ``(None, why, None)`` whenever the inputs are not good enough to
+    predict from, which is the honest outcome: an un-anchored model should show
+    "enter a number" rather than a figure the data cannot support.
+    """
+    cal = _calibration()
+    if not cal:
+        return None, "no usable calibration set in predicted_anchors.json", None
+    bw, med, band, n = cal
+    if band > _PRED_MAX_LOO_ERR:
+        return None, (f"predictor rejected: leave-one-out error {band:.0%} exceeds the "
+                      f"{_PRED_MAX_LOO_ERR:.0%} ceiling — enter a number instead"), None
+
+    from . import tco_engine as _T
+    info = _T.MODEL_CATALOG.get(catalog_name) or {}
+    if not info:
+        return None, f"{catalog_name} is not in MODEL_CATALOG", None
+    # The model is autoregressive-decode-specific: a vision ENCODER has no
+    # tokens/sec at all, so predicting one for CLIP/ViT/ResNet would be a
+    # category error dressed up as a figure. Refuse instead.
+    if info.get("category") != "LLM" or info.get("type") not in ("moe", "decoder"):
+        return None, (f"{catalog_name} is a {info.get('category','?')} "
+                      f"{info.get('type','?')} — decode tok/s does not apply"), None
+    # Bandwidth per token follows ACTIVE parameters for an MoE (that is the whole
+    # reason a 1.6T model can out-run a 550B one) and total params for a dense.
+    act = info.get("active_b") if info.get("type") == "moe" else info.get("params_b")
+    act = act or info.get("params_b")
+    bpp = effective_bytes_per_param(catalog_name, precision)
+    if not act or not bpp:
+        return None, f"no active-param / bytes-per-param basis for {catalog_name}", None
+
+    gb_per_tok = float(act) * float(bpp)
+    ceiling = bw / gb_per_tok
+    prec = (precision or _T.native_precision(catalog_name) or "?").upper()
+    basis = "measured checkpoint size" if isinstance(info.get("disk_gb"), dict) \
+        and info["disk_gb"].get(prec) else "nominal bytes/param"
+    point = ceiling * med
+    why = (
+        f"PREDICTED — not measured, ±{band:.0%}. {bw:g} GB/s ÷ {gb_per_tok:.1f} GB/token "
+        f"({act:g}B active × {bpp:.3f} B/param, {basis}) × {med:.3f} efficiency, "
+        f"calibrated on {n} single-stream measurements taken on this box. The ±{band:.0%} "
+        f"is the predictor's largest leave-one-out error against those same "
+        f"measurements, not a guess. Moves $/MTok and aggregate throughput only — "
+        f"capacity, node count and CapEx come from attention geometry and measured "
+        f"checkpoint size, and do not depend on this figure."
+    )
+    return point, why, (point * (1.0 - band), point * (1.0 + band))
+
+
+def anchor_with_prediction(
+    catalog_name: str,
+) -> tuple[float | None, str, str, tuple[float, float] | None]:
+    """``(tps, provenance, tier, band)`` across the full four-tier ladder.
+
+    ``tier`` is one of ``"vllm"``, ``"hf"``, ``"predicted"``, ``"none"`` and is
+    what the UI keys its colour off, so a prediction can never be painted as a
+    measurement.
+    """
+    t, why = measured_tps(catalog_name)
+    if t:
+        return t, why, "vllm", None
+    t, why = _hf_anchor(catalog_name)
+    if t:
+        return t, why, "hf", None
+    t, why, band = predicted_anchor(catalog_name)
+    if t:
+        return t, why, "predicted", band
+    return None, why, "none", None
+
+
+def predicted_models() -> list[str]:
+    """Catalog keys that have NO measurement but CAN be predicted."""
+    from . import tco_engine as _T
+    done = set(anchored_models())
+    return [m for m in _T.MODEL_CATALOG
+            if m not in done and predicted_anchor(m)[0] is not None]

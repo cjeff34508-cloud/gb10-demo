@@ -448,6 +448,193 @@ def a12_kv_matches_box_measurements(report):
            "reproduces both measured figures: 48.0 and 10.0 KiB/token @fp8")
 
 
+# ---------------------------------------------------------------------------
+# G2b / G3 — the 2026 frontier entries and the PREDICTED anchor tier
+# ---------------------------------------------------------------------------
+
+# KV bytes/token at FP8, read off each repo's own config.json on 2026-11-06.
+# A wrong `attn_layers` is the single likeliest error in a hybrid entry and it
+# is silent — the model still sizes, just wrongly — so these are pinned exactly.
+_G2B_KV_KIB_FP8 = {
+    "Nemotron-3-Ultra-550B-A55B":   6.5,    # 13 attention layers of 108
+    "Kimi-K3 (2.8T)":              13.5,    # 24 full MLA layers of 93
+    "DeepSeek-V4-Pro (1.6T)":      34.3,    # 61 layers, 576-wide absorbed MLA
+    "GLM-5.2-753B-A40B":           43.9,    # 78 layers, 576-wide absorbed MLA
+    "Inkling-975B-A41B":          132.0,    # all 66 layers, upper bound
+    "Inkling-975B-A41B (BF16)":   132.0,
+}
+
+
+def a13_frontier_kv_geometry(report):
+    """The six frontier entries must reproduce their config-derived KV exactly.
+
+    Each must also come from ATTENTION GEOMETRY, not the legacy
+    fraction-of-weights fallback — `kv_bytes_per_token` returning None would
+    mean a missing MODEL_ARCH row, and the fallback over-charges an MoE's KV
+    wildly (that is the defect assertion 8 guards).
+    """
+    from helpers.tco_engine import kv_bytes_per_token
+    for name, want in _G2B_KV_KIB_FP8.items():
+        if name not in MODEL_CATALOG:
+            raise Fail(f"{name} missing from MODEL_CATALOG")
+        got = kv_bytes_per_token(name, "FP8")
+        if got is None:
+            raise Fail(f"{name}: kv_bytes_per_token is None — no MODEL_ARCH row, so "
+                       f"KV silently reverts to the fraction-of-weights model")
+        kib = got / 1024.0
+        if abs(kib - want) > 0.1:
+            raise Fail(f"{name}: KV {kib:.1f} KiB/tok, expected {want} "
+                       f"(check `attn_layers` / `kv_latent` against config.json)")
+    report("13 frontier-kv", True,
+           f"{len(_G2B_KV_KIB_FP8)} frontier entries reproduce their config-derived KV "
+           f"(6.5-132.0 KiB/tok, all geometric)")
+
+
+def a14_frontier_cannot_fit_gb10(report):
+    """Every frontier entry must fail to fit a GB10, at every precision it offers.
+
+    These are projection-only by construction. If one ever reads as fitting, a
+    `disk_gb` is wrong or a precision list grew — both of which would put a
+    multi-hundred-GB model in front of a customer as desktop-viable.
+    """
+    from helpers.tco_engine import (model_memory_gb, supported_precisions,
+                                    gpus_needed_for_model)
+    from helpers.mem_guard import GB10_USABLE_GB
+    worst = []
+    for name in _G2B_KV_KIB_FP8:
+        for prec in supported_precisions(name):
+            gb = model_memory_gb(name, prec, batch_size=1, context_len=512)
+            if gb <= GB10_USABLE_GB:
+                raise Fail(f"{name} @{prec} reads as {gb:.1f} GB, inside the "
+                           f"{GB10_USABLE_GB:g} GB usable window — it must not")
+            n = gpus_needed_for_model(gb, GB10_USABLE_GB)
+            if n < 2:
+                raise Fail(f"{name} @{prec} needs {n} GB10 for {gb:.1f} GB")
+            worst.append(n)
+    report("14 frontier-nofit", True,
+           f"all frontier entries exceed the {GB10_USABLE_GB:g} GB window at every "
+           f"precision; {min(worst)}-{max(worst)} GB10s needed for weights")
+
+
+def a15_inkling_pair_differs_only_by_format(report):
+    """The Inkling NVFP4/BF16 pair must share geometry and differ only in weights.
+
+    That pair IS the quantization argument: same model, same KV, 3.2x the
+    weights. If their KV ever diverges, one of the two arch rows was edited in
+    isolation and the comparison stops being like-for-like.
+    """
+    from helpers.tco_engine import kv_bytes_per_token, _weights_and_raw
+    a, b = "Inkling-975B-A41B", "Inkling-975B-A41B (BF16)"
+    ka, kb = kv_bytes_per_token(a, "FP8"), kv_bytes_per_token(b, "FP8")
+    if ka != kb:
+        raise Fail(f"Inkling pair KV diverged: {ka} vs {kb} bytes/token — same "
+                   f"architecture must give the same KV")
+    wa = _weights_and_raw(a, "FP4")[0]
+    wb = _weights_and_raw(b, "BF16")[0]
+    ratio = wb / wa
+    if not 3.0 <= ratio <= 3.4:
+        raise Fail(f"Inkling BF16/NVFP4 weight ratio {ratio:.2f}, expected ~3.22 "
+                   f"(592.0 GB vs 1904.8 GB measured from the Hub manifests)")
+    report("15 inkling-pair", True,
+           f"identical KV ({ka/1024:.1f} KiB/tok), weights {wa:.0f} GB vs {wb:.0f} GB "
+           f"({ratio:.2f}x) — format alone")
+
+
+def a16_predictor_backtest(report):
+    """Leave-one-out back-test: the predictor must retrodict its own calibration.
+
+    Calibrate on every measurement but one, predict the held-out one, and
+    require the largest relative error to stay under the published ceiling. This
+    is the gate that lets a PREDICTED figure publish at all, and it is
+    falsifiable: a calibration row that makes the model worse turns this red.
+
+    The published band is this error, NOT the in-sample efficiency spread. A
+    min-max interval over n-1 points structurally cannot cover a held-out
+    endpoint, so banding on the spread fails by construction and says nothing
+    about accuracy.
+    """
+    from helpers.vllm_reference import loo_errors, _calibration, _PRED_MAX_LOO_ERR
+    errs = loo_errors()
+    if not errs:
+        raise Fail("no leave-one-out errors — calibration set missing or too small")
+    if len(errs) < 4:
+        raise Fail(f"only {len(errs)} calibration points; need >= 4 to back-test")
+    worst = max(abs(e) for e in errs)
+    if worst > _PRED_MAX_LOO_ERR:
+        raise Fail(f"predictor leave-one-out error {worst:.1%} exceeds the "
+                   f"{_PRED_MAX_LOO_ERR:.0%} ceiling — predictions must not publish")
+    cal = _calibration()
+    if cal is None:
+        raise Fail("_calibration() returned None")
+    _, med, band, n = cal
+    if abs(band - worst) > 1e-9:
+        raise Fail(f"published band {band:.3f} != worst LOO error {worst:.3f}; the "
+                   f"band must BE the measured out-of-sample error")
+    if not 0.3 <= med <= 0.9:
+        raise Fail(f"calibrated efficiency {med:.3f} is outside a physical range")
+    report("16 predictor-backtest", True,
+           f"LOO errors {', '.join(f'{e:+.1%}' for e in errs)} — worst {worst:.1%} "
+           f"< {_PRED_MAX_LOO_ERR:.0%}; eff {med:.3f} over n={n}")
+
+
+def a17_predicted_tier_is_distinct(report):
+    """A prediction must never be returned as a measurement, and vice versa.
+
+    `anchor_with_prediction` is what the UI colours off, so the tier label is
+    load-bearing: mislabel it and a predicted number is painted green as if it
+    were captured on this box.
+    """
+    from helpers.vllm_reference import anchor_with_prediction, predicted_anchor
+    # a measured model must stay measured even though it is also predictable
+    t, _why, tier, band = anchor_with_prediction("Qwen2.5-7B")
+    if tier != "vllm" or not t:
+        raise Fail(f"Qwen2.5-7B should be tier 'vllm', got {tier!r}")
+    if band is not None:
+        raise Fail("a measurement must not carry a prediction band")
+    # every frontier entry must be tier 'predicted', with a band
+    for name in _G2B_KV_KIB_FP8:
+        t, _why, tier, band = anchor_with_prediction(name)
+        if tier != "predicted":
+            raise Fail(f"{name}: tier {tier!r}, expected 'predicted'")
+        if not t or not band or not (band[0] < t < band[1]):
+            raise Fail(f"{name}: point {t} not strictly inside band {band}")
+        if "PREDICTED" not in _why:
+            raise Fail(f"{name}: provenance string does not say PREDICTED")
+    # a vision encoder has no decode rate and must be refused outright
+    for enc in ("CLIP ViT-L/14", "ResNet-50"):
+        if predicted_anchor(enc)[0] is not None:
+            raise Fail(f"{enc} is an encoder — it must not get a tok/s prediction")
+    report("17 predicted-tier", True,
+           "measured stays 'vllm'; 6 frontier entries are 'predicted' with bands; "
+           "encoders refused")
+
+
+def a18_sparsity_beats_size(report):
+    """A sparser MoE must out-run a denser one, even when far larger.
+
+    DeepSeek-V4-Pro is 2.9x Nemotron-3-Ultra's parameters and must still be
+    predicted FASTER per user, because it reads 49B per token against 55B. If
+    this inverts, the predictor has started following total params and the whole
+    sparsity argument the catalog makes is wrong.
+    """
+    from helpers.vllm_reference import predicted_anchor
+    big, _w, _b = predicted_anchor("DeepSeek-V4-Pro (1.6T)")
+    mid, _w, _b = predicted_anchor("Nemotron-3-Ultra-550B-A55B")
+    if not (big and mid):
+        raise Fail("missing predictions for the sparsity comparison")
+    if big <= mid:
+        raise Fail(f"DeepSeek-V4-Pro (1.6T/49B) predicted {big:.1f} tok/s <= "
+                   f"Nemotron-3-Ultra (550B/55B) {mid:.1f} — sparsity term lost")
+    # and the largest model must be the slowest per user
+    kimi, _w, _b = predicted_anchor("Kimi-K3 (2.8T)")
+    if kimi >= mid:
+        raise Fail(f"Kimi-K3 (104B active) predicted {kimi:.1f} >= "
+                   f"Nemotron-3-Ultra (55B active) {mid:.1f}")
+    report("18 sparsity-ranking", True,
+           f"1.6T/A49B {big:.1f} tok/s > 550B/A55B {mid:.1f} > 2.8T/A104B {kimi:.1f} — "
+           f"ranking follows active params, not total")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--generate", action="store_true", help="(re)write golden baseline")
@@ -465,7 +652,10 @@ def main():
     for fn in (a1_backcompat, a2_ordering, a3_cost, a4_monotonic, a5_captures, a6_edges,
                a7_toggle, a8_kv_expert_independent, a9_kv_linear_in_context,
                a10_capacity_uses_total, a11_mla_cheaper_than_gqa,
-               a12_kv_matches_box_measurements):
+               a12_kv_matches_box_measurements, a13_frontier_kv_geometry,
+               a14_frontier_cannot_fit_gb10, a15_inkling_pair_differs_only_by_format,
+               a16_predictor_backtest, a17_predicted_tier_is_distinct,
+               a18_sparsity_beats_size):
         try:
             fn(report)
         except Fail as e:
